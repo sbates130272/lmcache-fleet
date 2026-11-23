@@ -2,23 +2,42 @@
 NUM ?= 3
 SEQ ?= 8
 
+define TARGETS_PY
+import json, sys
+for t in json.load(sys.stdin)["data"]["activeTargets"]:
+    print(f'  {t["labels"].get("job","?"):22s} {t["scrapeUrl"]:44s} {t["health"]}')
+endef
+export TARGETS_PY
+
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim report down clean logs
+.PHONY: help gen up stim dash targets report down clean logs
 
 ##@ Fleet Lifecycle
 
 gen: ## Regenerate docker-compose.yml for NUM servers
 	NUM_SERVERS=$(NUM) SEQ=$(SEQ) python3 gen_compose.py
 
-up: gen ## Regenerate, then start the coordinator and servers
+up: gen ## Regenerate, then start the fleet plus prometheus and grafana
 	docker compose up -d
 	@echo "waiting for servers to be healthy..."
 	@docker compose ps --format '{{.Name}} {{.Status}}'
+	@$(MAKE) --no-print-directory dash
 
 stim: gen ## Run the one-shot bench stimulators to store KV chunks
 	docker compose --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
 
 ##@ Inspection
+
+dash: ## Print the Grafana URL (compose picks a free port from the range)
+	@port=$$(docker compose port grafana 3000 2>/dev/null | cut -d: -f2); \
+	if [ -n "$$port" ]; then echo "Grafana: http://localhost:$$port  (anonymous, opens on the fleet dashboard)"; \
+	else echo "grafana is not running — try 'make up'"; exit 1; fi
+
+targets: ## Show what Prometheus is scraping and whether it is up
+	@docker compose exec -T prometheus wget -qO- \
+		'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null \
+		| python3 -c "$$TARGETS_PY" \
+		|| echo "prometheus is not running — try 'make up'"
 
 report: ## Print the coordinator key directory and per-server L1 usage
 	./report.sh $(NUM)
@@ -31,9 +50,9 @@ logs: ## Follow logs from every service
 down: ## Stop and remove the fleet containers
 	docker compose --profile stim down --remove-orphans
 
-clean: down ## Stop the fleet and delete the cached L2 blobs
-	@echo "removing L2 bind-mount contents under ./data/"
-	rm -rf ./data/l2-server-*
+clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
+	@echo "removing bind-mount contents under ./data/"
+	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana
 
 ##@ Help
 
