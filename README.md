@@ -1,4 +1,4 @@
-# LMCache MP fleet demo (v0.5.8)
+# LMCache Fleet Demo (v0.5.8)
 
 Programmable-size LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
 one coordinator building the fleet-wide key directory, and per-server one-shot
@@ -11,7 +11,7 @@ directory tracks both placements.
 ```bash
 python3 gen_compose.py 4        # or: NUM_SERVERS=4 SEQ=20 L1_GB=8 python3 gen_compose.py
 docker compose up -d            # coordinator + N servers (healthchecks gate stimulators)
-docker compose --profile stimulate up -d $(seq 1 4 | sed 's/^/stimulate-/')   # make stores
+docker compose --profile stim up -d $(seq 1 4 | sed 's/^/stim-/')   # make stores
 ./report.sh 4                   # directory: per-instance L1/L2 placements
 ```
 
