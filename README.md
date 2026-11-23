@@ -35,6 +35,9 @@ plus real `.data` files under `data/l2-server-*/`.
 | var | default | meaning |
 |---|---|---|
 | NUM_SERVERS | 3 | fleet size |
+| NUM_COORD | 1 | coordinators; must be 1 (v0.5.8 has no coordinator clustering) |
+| RUN_UID / RUN_GID | your uid/gid | uid:gid every container runs as |
+| COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
 | SEQ | 6 | distinct synthetic sequences per stimulator |
 | NUM_TOKENS | 512 | tokens per store request (multiple of CHUNK_SIZE) |
 | CHUNK_SIZE | 256 | chunk size (must match across servers/coordinator) |
@@ -55,6 +58,14 @@ To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
   keep it double-quoted.
 - Named volumes for the fs L2 adapter are root-owned → PermissionError from the
   non-root container uid. Use pre-`chmod 777` bind mounts (gen_compose does this).
+  Services also pin `user: <your uid>:<your gid>` so the `.data` blobs come back
+  owned by you; the image defaults to uid 1000 (`lmcache`), which only happens to
+  be right when your own uid is 1000. A non-1000 uid has no `/etc/passwd` entry
+  and lands on `HOME=/`, so the services set `HOME=/tmp`.
+- Don't use `container_name:` here — it is node-global, and names like
+  `coordinator` collide with unrelated stacks. Compose's project prefix
+  (`lmcache-fleet-demo-*`) keeps the fleet to itself; service DNS names on the
+  `fleet` network are unaffected.
 - Bench clients allocate `n_kv*n_layers` tensors of NB*BS*H*D*2B each and
   migrate all of them to SHM — the old default shape (1024 blocks × 16 × 8 × 128
   × 32 layers) was ~2 GB per client and OOM-killed 3 servers on a 7 GB host.
