@@ -25,4 +25,5 @@ down:
 	docker compose --profile stimulate down --remove-orphans
 
 clean: down
-	docker volume ls -q | grep -E '_l2-server-' | xargs -r docker volume rm
+	@echo "removing L2 bind-mount contents under ./data/"
+	rm -rf ./data/l2-server-*
