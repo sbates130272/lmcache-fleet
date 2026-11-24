@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # Reads .hadolint.yaml from the repo root, which documents why DL3059 and
       # DL3013 are ignored rather than fixed.
       - name: Run hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: docker/Dockerfile
 
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # docker/docker-compose.yml is generated and gitignored, so there is no
       # checked-in file to lint. Linting the generator's *output* is the point:
