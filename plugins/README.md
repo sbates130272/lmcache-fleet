@@ -43,16 +43,29 @@ other on `PYTHONPATH`.
 
 ## Publishing
 
-Each directory builds and uploads on its own:
+Each directory is its own distribution, built and uploaded on its own. From the
+repo root:
 
 ```bash
-cd plugins/lmcache-l2-sim
-rm -rf dist                      # stale artifacts would be uploaded too
-python3 -m build
-twine check dist/*
-twine upload --repository testpypi dist/*    # rehearse first
-twine upload dist/*
+make dist                                  # build + twine check, every plugin
+make dist PLUGIN=lmcache-l2-sim            # just one
+make publish-precheck                      # dist, then install-and-import each wheel
+make publish CONFIRM=1                     # upload to PyPI
 ```
 
-A name can only be used once on PyPI, so check `twine check` passes and the
-TestPyPI upload installs before claiming the real name.
+`dist` removes stale `dist/` and `*.egg-info` first — artifacts from an earlier
+build, or from an earlier package name, would otherwise be uploaded too. The
+targets need `build` and `twine` (`pip install --user build twine`), plus `uv`
+for the precheck, and discover plugins by wildcard, so a new directory with a
+`pyproject.toml` is picked up with no Makefile change.
+
+`publish-precheck` installs each freshly built wheel into a throwaway `uv` venv
+and imports its top-level packages. A wheel can build and pass `twine check`
+and still be unimportable — a wrong `packages =`, a module left out of the
+distribution — and that is only discoverable from an installed copy. It imports
+the top level only: the adapter module needs LMCache, which `make test-plugins`
+covers inside the image.
+
+`publish` runs `publish-precheck` first and then demands `CONFIRM=1`, because
+the upload cannot be taken back: a version on PyPI can be yanked but never
+replaced, and a project name is claimed once.

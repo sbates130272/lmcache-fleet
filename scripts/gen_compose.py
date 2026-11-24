@@ -129,6 +129,17 @@ def _scan_env_defaults(path):
             yield name, default
 
 
+def _env_vars_palette():
+    """ANSI codes matching the Makefile's `help` target, or blanks when piped.
+
+    Colour only when stdout is a terminal, so redirecting or grepping the
+    listing yields plain text. NO_COLOR is honoured as well.
+    """
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return {k: "" for k in ("bold", "cyan", "dim", "off")}
+    return {"bold": "\033[1m", "cyan": "\033[36m", "dim": "\033[2m", "off": "\033[0m"}
+
+
 def _print_env_vars():
     """Print every environment variable the demo reads, grouped, with defaults."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -145,15 +156,19 @@ def _print_env_vars():
         section, description = ENV_DOCS.get(name, ("undocumented", ""))
         sections.setdefault(section, []).append((name, default, description))
 
-    print("\nLMCache Fleet environment variables\n")
-    print("  Pass them to make, e.g.  L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000")
-    print("  NUM and SEQ are make variables; everything below is an env var.")
+    c = _env_vars_palette()
+    print(f"\n{c['bold']}LMCache Fleet environment variables{c['off']}\n")
+    print(f"  {c['dim']}Pass them to make, e.g."
+          f"  L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000{c['off']}")
+    print(f"  {c['dim']}NUM and SEQ are make variables; "
+          f"everything below is an env var.{c['off']}")
     for section in _SECTION_ORDER:
         if section not in sections:
             continue
-        print(f"\n{section}")
+        print(f"\n{c['bold']}{section}{c['off']}")
         for name, default, description in sorted(sections[section]):
-            print(f"  {name:<26} {default:<26} {description}")
+            # Pad inside the colour, so the escapes never count toward the width.
+            print(f"  {c['cyan']}{name:<26}{c['off']} {default:<26} {description}")
     print()
 
 

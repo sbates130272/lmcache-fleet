@@ -26,7 +26,8 @@ No LMCache changes or image rebuild needed. Make the package importable by the
 server, then select it through LMCache's built-in `plugin` adapter type.
 
 ```bash
-pip install ./plugins            # into the environment LMCache runs in
+pip install lmcache-l2-sim                  # into the environment LMCache runs in
+pip install ./plugins/lmcache-l2-sim        # or from a clone, from the repo root
 # or, without installing: mount this directory and set PYTHONPATH to it
 ```
 
