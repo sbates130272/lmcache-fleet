@@ -7,13 +7,17 @@
                    STORE synthetic KV chunks into their paired server; shares
                    the server's IPC namespace so the CPU SHM path works)
 
-Usage:
-  python3 gen_compose.py [N]            # N = number of MP servers (default 3)
-  SEQ=8 NUM_SERVERS=4 python3 gen_compose.py   # env overrides
+Writes docker/docker-compose.yml and monitoring/prometheus.yml, both generated
+and both gitignored. Volume paths are relative to docker/, since that is where
+compose resolves them from.
+
+Usage (from the repo root):
+  python3 scripts/gen_compose.py [N]    # N = number of MP servers (default 3)
+  SEQ=8 NUM_SERVERS=4 python3 scripts/gen_compose.py   # env overrides
 Then:
   docker compose up -d                  # coordinator + servers
   docker compose --profile stim up stim-1 ... stim-N
-  ./report.sh                           # directory summary (L1/L2 per server)
+  scripts/report.sh                     # directory summary (L1/L2 per server)
 """
 import json
 import os
@@ -39,6 +43,13 @@ L1_GB        = float(os.environ.get("L1_GB", "1"))
 SEQS         = int(os.environ.get("SEQ", "6"))          # distinct synthetic sequences per stimulator
 NUM_TOKENS   = int(os.environ.get("NUM_TOKENS", "512")) # tokens per synthetic request
 COORD_PORT   = int(os.environ.get("COORD_PORT", "9300")) # host 127.0.0.1 port for coordinator
+# The port the coordinator listens on INSIDE the fleet network. Fixed, and
+# deliberately separate from COORD_PORT: everything on the network addresses
+# the coordinator by service name and this port, while COORD_PORT only decides
+# which host port that is published to. Conflating them meant overriding
+# COORD_PORT pointed every server at a port the coordinator was not listening
+# on, and the key directory silently stayed empty.
+COORD_NET_PORT = 9300
 HTTP_BASE    = int(os.environ.get("HTTP_BASE", "8181")) # host ports: 8181, 8182, ...
 EVICT_WATERMARK = os.environ.get("EVICT_WATERMARK", "0.8")
 SHM_SIZE = os.environ.get("SHM_SIZE", "512m")
@@ -48,6 +59,13 @@ SHM_SIZE = os.environ.get("SHM_SIZE", "512m")
 RUN_UID = os.environ.get("RUN_UID", str(os.getuid()))
 RUN_GID = os.environ.get("RUN_GID", str(os.getgid()))
 RUN_AS = f'    user: "{RUN_UID}:{RUN_GID}"\n    environment:\n      HOME: /tmp\n'
+
+# The lmcache image is built on NVIDIA's NGC PyTorch base, whose ENTRYPOINT is
+# /opt/nvidia/nvidia_entrypoint.sh: CUDA banners, GPU-driver probes and a CPU
+# capability check that misfires on this host and sleeps 2s per container
+# start. This fleet is CPU-only -- no GPU, no vLLM -- so none of it applies.
+# Skip it and exec lmcache directly.
+NO_ENTRYPOINT = '    entrypoint: [""]\n'
 
 # Compose project name: scopes the network, volumes and container names so a
 # second LMCache stack on the same node cannot collide with this one.
@@ -141,7 +159,7 @@ else:
     L2_ADAPTER = _fs_spec
 L2_ADAPTER_JSON = json.dumps(L2_ADAPTER, separators=(",", ":"))
 L2_ENV = "      PYTHONPATH: /opt/lmcache-plugins\n" if L2_PLUGIN else ""
-L2_PLUGIN_MOUNT = ("      - ./plugins:/opt/lmcache-plugins:ro           # out-of-tree L2 adapter\n"
+L2_PLUGIN_MOUNT = ("      - ../plugins:/opt/lmcache-plugins:ro           # out-of-tree L2 adapter\n"
                    if L2_PLUGIN else "")
 # Checksum verification compares retrieved KV against what was stored, which
 # dedup deliberately breaks for anything served from L2.
@@ -172,13 +190,13 @@ for i in range(1, NUM_SERVERS + 1):
     servers.append(f"""  {name}:
     image: {IMAGE}
     hostname: {name}
-{RUN_AS}{L2_ENV}    ipc: shareable
+{NO_ENTRYPOINT}{RUN_AS}{L2_ENV}    ipc: shareable
     shm_size: {SHM_SIZE}
     networks: [fleet]
     ports:
       - "127.0.0.1:{HTTP_BASE + i - 1}:8080"   # HTTP API on host for /status, /cache/objects
     volumes:
-      - ./data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
+      - ../data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
 {L2_PLUGIN_MOUNT}    healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck',timeout=2)"]
@@ -196,7 +214,7 @@ for i in range(1, NUM_SERVERS + 1):
       --eviction-trigger-watermark {EVICT_WATERMARK}
       --supported-transfer-mode auto
       --shm-name fleet{i} --no-l1-use-lazy
-      --coordinator-url http://coordinator:{COORD_PORT}
+      --coordinator-url http://coordinator:{COORD_NET_PORT}
       --coordinator-advertise-ip {name}
       --coordinator-event-reporting
       --l2-adapter '{L2_ADAPTER_JSON}'
@@ -205,7 +223,7 @@ for i in range(1, NUM_SERVERS + 1):
     stimulators.append(f"""  stim-{i}:
     image: {IMAGE}
     profiles: [stim]
-{RUN_AS}    ipc: service:{name}          # share /dev/shm so bench's CPU SHM path reaches the server
+{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so bench's CPU SHM path reaches the server
     shm_size: {SHM_SIZE}
     networks: [fleet]
     depends_on:
@@ -237,18 +255,18 @@ services:
   coordinator:
     image: {IMAGE}
     hostname: coordinator
-{RUN_AS}    networks: [fleet]
+{NO_ENTRYPOINT}{RUN_AS}    networks: [fleet]
     ports:
-      - "127.0.0.1:{COORD_PORT}:9300"
+      - "127.0.0.1:{COORD_PORT}:{COORD_NET_PORT}"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
-             "import urllib.request;urllib.request.urlopen('http://localhost:9300/healthz',timeout=2)"]
+             "import urllib.request;urllib.request.urlopen('http://localhost:{COORD_NET_PORT}/healthz',timeout=2)"]
       interval: 5s
       timeout: 3s
       retries: 30
     command: >
       /opt/venv/bin/lmcache coordinator
-      --host 0.0.0.0 --port 9300
+      --host 0.0.0.0 --port {COORD_NET_PORT}
       --chunk-size {CHUNK_SIZE}
       --instance-timeout 30
 
@@ -257,8 +275,8 @@ services:
     hostname: prometheus
 {RUN_AS}    networks: [fleet]
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./data/prometheus:/prometheus
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../data/prometheus:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -267,12 +285,12 @@ services:
   directory-exporter:
     image: {EXPORTER_IMAGE}
     hostname: directory-exporter
-{RUN_AS}      COORDINATOR_URL: http://coordinator:9300
+{RUN_AS}      COORDINATOR_URL: http://coordinator:{COORD_NET_PORT}
       POLL_INTERVAL: "{DIRECTORY_POLL}"
     networks: [fleet]
     volumes:
-      - ./monitoring/exporter:/exporter:ro
-      - ./data/exporter:/state            # first-seen times, so ages survive a restart
+      - ../monitoring/exporter:/exporter:ro
+      - ../data/exporter:/state            # first-seen times, so ages survive a restart
     command: ["python", "-u", "/exporter/directory_exporter.py"]
 
   grafana:
@@ -291,9 +309,9 @@ services:
     ports:
       - "{GRAFANA_PORTS}:3000"   # host range → compose picks a free port; `make dash` prints it
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
-      - ./data/grafana:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - ../data/grafana:/var/lib/grafana
 
 """ + "\n".join(servers + stimulators)
 
@@ -319,7 +337,7 @@ scrape_configs:
   - job_name: "lmcache-coordinator"
     metrics_path: /metrics
     static_configs:
-      - targets: ["coordinator:9300"]
+      - targets: ["coordinator:{COORD_NET_PORT}"]
         labels:
           component: "coordinator"
 
@@ -336,7 +354,7 @@ scrape_configs:
 {scrape_targets}
 """
 
-here = os.path.dirname(os.path.abspath(__file__))
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Bind mounts must be writable by the container uid. Containers run as the
 # invoking user by default, so owner-only write is enough; only fall back to
 # world-writable when RUN_UID has been overridden to someone else.
@@ -352,11 +370,15 @@ os.makedirs(mon, exist_ok=True)
 with open(os.path.join(mon, "prometheus.yml"), "w") as f:
     f.write(prometheus_yml)
 
-out = os.path.join(here, "docker-compose.yml")
+docker_dir = os.path.join(here, "docker")
+os.makedirs(docker_dir, exist_ok=True)
+out = os.path.join(docker_dir, "docker-compose.yml")
 with open(out, "w") as f:
     f.write(compose)
 print(f"wrote {out} ({NUM_SERVERS} servers, coordinator, stimulators, "
       f"prometheus + grafana; SEQ={SEQS})")
+print("  compose no longer sits at the repo root: use make, or "
+      "export COMPOSE_FILE=docker/docker-compose.yml")
 print(f"wrote {os.path.join(mon, 'prometheus.yml')} "
       f"({NUM_SERVERS + 2} scrape targets)")
 

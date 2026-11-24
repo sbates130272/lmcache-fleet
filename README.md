@@ -1,6 +1,7 @@
-# LMCache Fleet Demo (v0.5.8)
+# LMCache Fleet Demo
 
-Programmable-size LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
+This repository contains the tools needed to generate and deploy a
+programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
 one coordinator building the fleet-wide key directory, and per-server one-shot
 stimulators (`lmcache bench server --mode cpu`, no vLLM) that STORE synthetic KV
 chunks. Eviction past the L1 watermark spills blocks to L2; the coordinator
@@ -15,16 +16,49 @@ make report NUM=4               # directory: per-instance L1/L2 placements
 make dash                       # Grafana URL (compose picks a free host port)
 ```
 
-Or without make:
+The compose file is generated into `docker/`, so plain `docker compose ...` from
+the repo root needs `export COMPOSE_FILE=docker/docker-compose.yml` first. The
+make targets pass `-f` themselves.
 
-```bash
-python3 gen_compose.py 4        # or: NUM_SERVERS=4 SEQ=20 L1_GB=8 python3 gen_compose.py
-docker compose up -d            # coordinator + N servers + prometheus + grafana
-docker compose --profile stim up -d $(seq 1 4 | sed 's/^/stim-/')   # make stores
-./report.sh 4                   # directory: per-instance L1/L2 placements
+## Layout
+
+```
+docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
+scripts/     gen_compose.py (writes the compose file), report.sh
+monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
+plugins/     lmcache_dedup, the out-of-tree dedup + latency L2 adapter
+data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
 ```
 
-## Dummy L2: many blocks, almost no disk
+## A slim, CPU-only image
+
+The published `lmcache/standalone` is ~14.8 GB: a full CUDA toolchain on
+`nvcr.io/nvidia/cuda-dl-base`, for a fleet that never touches a GPU.
+[docker/Dockerfile](docker/Dockerfile) builds a CPU-only alternative on
+`python:3.12-slim`:
+
+```bash
+docker build -f docker/Dockerfile -t lmcache-fleet-demo/lmcache:0.5.8-cpu .
+LMCACHE_IMAGE=lmcache-fleet-demo/lmcache:0.5.8-cpu make up NUM=2
+```
+
+**1.67 GB against 14.8 GB**, verified on a full fleet cycle: coordinator and
+servers healthy, stimulators exit 0, 116 keys tracked with 80 L1 and 160 L2
+placements — matching the published image exactly — and zero errors or CUDA
+banners in the logs. It is opt-in: `LMCACHE_IMAGE` still defaults to
+`lmcache/standalone`.
+
+Two things make it possible. LMCache's dependency list requires `cupy-cuda13x`,
+`cuda-python`, `cufile-python` and `nvtx` unconditionally, but nothing on the
+paths this demo uses imports them — so the wheel is installed with `--no-deps`
+and the genuinely needed dependencies are listed explicitly. And while
+`lmcache_native.so` links `libc10.so` and `libtorch_cpu.so`, it links nothing
+CUDA, so a CPU-only torch satisfies it. That linkage is ABI-sensitive: the
+`TORCH_VERSION` build arg must match the torch the wheel was compiled against,
+or `import lmcache` fails with an undefined symbol. The build asserts this
+rather than shipping a broken image.
+
+## Dummy L2: Many KV Blocks with Almost No Disk
 
 `L2_DEDUP=1` wraps the `fs` L2 adapter with [plugins/lmcache_dedup](plugins/),
 an out-of-tree adapter loaded through LMCache's built-in `plugin` type (no image
@@ -60,7 +94,7 @@ checksum verification whenever dedup is on. Do not point a real model at it.
 See [plugins/README.md](plugins/README.md) for the full parameter list, using the
 adapter outside this demo, and the upstreaming note.
 
-## Monitoring
+## Monitoring the Fleet
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the
 only service published past loopback; it binds a host *range* (`3000-3010` by
@@ -129,7 +163,7 @@ The coordinator's own *metrics* have no per-server view of L2:
 `main` as well as v0.5.8. The per-server L2 numbers therefore come from the
 directory exporter, which reads them from the directory listing instead.
 
-## What you should see
+## Reporting on the Fleet
 
 `report.sh` output (verified on 2 servers, L1_GB=0.05, SEQ=40, 512 tokens/req):
 
@@ -144,7 +178,7 @@ unique keys tracked: 80
 
 plus real `.data` files under `data/l2-server-*/`.
 
-## Tunables (env)
+## Tunables (Environment Variables)
 
 | var | default | meaning |
 |---|---|---|
@@ -175,7 +209,7 @@ plus real `.data` files under `data/l2-server-*/`.
 
 To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
 
-## Key space
+## Key Space
 
 One stimulator per server, but no longer storing identical keys. `lmcache bench
 server` derives its KV deterministically from the sequence number, so two
@@ -212,7 +246,7 @@ key space: TOTAL=160 blocks (80 sequences x 2 blocks), seed=0, range=[0,160)
 For disjoint windows, raise `TOTAL` relative to `NUM_SERVERS × SEQ`; for heavy
 replication, lower it or narrow `RANGE_LO`/`RANGE_HI`.
 
-## Gotchas (learned the hard way)
+## Gotchas
 
 - `lmcache bench server --mode cpu --transfer-mode lmcache_driven` uses POSIX
   SHM → the stimulator MUST share the server's IPC namespace
@@ -228,6 +262,13 @@ replication, lower it or narrow `RANGE_LO`/`RANGE_HI`.
   defaults to uid 1000 (`lmcache`), which only happens to be right when your own
   uid is 1000. A non-1000 uid has no `/etc/passwd` entry
   and lands on `HOME=/`, so the services set `HOME=/tmp`.
+- The published `lmcache/standalone` image is ~14.8 GB and its `ENTRYPOINT` is
+  `/opt/nvidia/nvidia_entrypoint.sh`: CUDA banners, GPU-driver probes, and a
+  CPU-capability check that misfires on this AMD host and `sleep 2`s on every
+  container start. Those stray `ERROR: ... AVX instruction set` lines in the
+  logs come from it, not from LMCache. gen_compose sets `entrypoint: [""]` so
+  nothing runs before `lmcache`; see the slim image above to drop the CUDA base
+  entirely.
 - Don't use `container_name:` here — it is node-global, and names like
   `coordinator` collide with unrelated stacks. Compose's project prefix
   (`lmcache-fleet-demo-*`) keeps the fleet to itself; service DNS names on the

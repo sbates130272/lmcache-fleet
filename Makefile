@@ -1,4 +1,5 @@
-# LMCache Fleet Demo — see gen_compose.py
+# LMCache Fleet Demo — see scripts/gen_compose.py
+COMPOSE := docker compose -f docker/docker-compose.yml
 NUM ?= 3
 SEQ ?= 8
 
@@ -15,40 +16,40 @@ export TARGETS_PY
 ##@ Fleet Lifecycle
 
 gen: ## Regenerate docker-compose.yml for NUM servers
-	NUM_SERVERS=$(NUM) SEQ=$(SEQ) python3 gen_compose.py
+	NUM_SERVERS=$(NUM) SEQ=$(SEQ) python3 scripts/gen_compose.py
 
 up: gen ## Regenerate, then start the fleet plus prometheus and grafana
-	docker compose up -d
+	$(COMPOSE) up -d
 	@echo "waiting for servers to be healthy..."
-	@docker compose ps --format '{{.Name}} {{.Status}}'
+	@$(COMPOSE) ps --format '{{.Name}} {{.Status}}'
 	@$(MAKE) --no-print-directory dash
 
 stim: gen ## Run the one-shot bench stimulators to store KV chunks
-	docker compose --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
+	$(COMPOSE) --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
 
 ##@ Inspection
 
 dash: ## Print the Grafana URL (compose picks a free port from the range)
-	@port=$$(docker compose port grafana 3000 2>/dev/null | cut -d: -f2); \
+	@port=$$($(COMPOSE) port grafana 3000 2>/dev/null | cut -d: -f2); \
 	if [ -n "$$port" ]; then echo "Grafana: http://localhost:$$port  (anonymous, opens on the fleet dashboard)"; \
 	else echo "grafana is not running — try 'make up'"; exit 1; fi
 
 targets: ## Show what Prometheus is scraping and whether it is up
-	@docker compose exec -T prometheus wget -qO- \
+	@$(COMPOSE) exec -T prometheus wget -qO- \
 		'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null \
 		| python3 -c "$$TARGETS_PY" \
 		|| echo "prometheus is not running — try 'make up'"
 
 report: ## Print the key directory, per-server L1 usage and L2 files vs disk
-	./report.sh $(NUM)
+	scripts/report.sh $(NUM)
 
 logs: ## Follow logs from every service
-	docker compose logs -f --tail=100
+	$(COMPOSE) logs -f --tail=100
 
 ##@ Teardown
 
 down: ## Stop and remove the fleet containers
-	docker compose --profile stim down --remove-orphans
+	$(COMPOSE) --profile stim down --remove-orphans
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"

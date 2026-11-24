@@ -58,7 +58,7 @@ done
 
 echo
 echo "== L2 on disk (./data/l2-server-N) =="
-here="$(cd "$(dirname "$0")" && pwd)"
+here="$(cd "$(dirname "$0")/.." && pwd)"   # repo root, one level up from scripts/
 for i in $(seq 1 "$N"); do
   d="$here/data/l2-server-$i"
   [ -d "$d" ] || { echo "  server-$i: no $d"; continue; }
