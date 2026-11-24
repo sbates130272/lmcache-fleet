@@ -16,6 +16,7 @@ Then:
   ./report.sh                           # directory summary (L1/L2 per server)
 """
 import os
+import random
 import sys
 
 # ---------------- tunables (env-overridable) --------------------------------
@@ -50,6 +51,59 @@ RUN_AS = f'    user: "{RUN_UID}:{RUN_GID}"\n    environment:\n      HOME: /tmp\n
 # Compose project name: scopes the network, volumes and container names so a
 # second LMCache stack on the same node cannot collide with this one.
 PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "lmcache-fleet-demo")
+
+# ---------------- key-space assignment --------------------------------------
+# `lmcache bench server` generates its KV deterministically from the sequence
+# number, so two stimulators given the same --start/--end store byte-identical
+# keys. Its ONLY key selector is a contiguous half-open [--start, --end) range:
+# there is no --seed and no way to hand it a scattered set. So the PRNG lives
+# here, choosing where each stimulator's contiguous window lands inside a shared
+# key space, and the bench just walks the window it is given.
+#
+#   TOTAL      total unique blocks the fleet may address
+#   SEED       seeds the per-stimulator window placement; same seed → same layout
+#   RANGE_LO / RANGE_HI   optional block sub-range windows must stay inside
+#
+# A sequence covers NUM_TOKENS/CHUNK_SIZE blocks, so block counts are converted
+# to sequence counts before being handed to the bench.
+BLOCKS_PER_SEQ = NUM_TOKENS // CHUNK_SIZE
+if BLOCKS_PER_SEQ < 1:
+    sys.exit(f"NUM_TOKENS={NUM_TOKENS} is smaller than CHUNK_SIZE={CHUNK_SIZE}: "
+             "a request must cover at least one block")
+if NUM_TOKENS % CHUNK_SIZE:
+    sys.exit(f"NUM_TOKENS={NUM_TOKENS} must be a multiple of CHUNK_SIZE={CHUNK_SIZE}")
+
+# Default key space: wide enough for every stimulator's window to fit without
+# overlapping, which keeps the old scale while making the windows distinct.
+_default_total = NUM_SERVERS * SEQS * BLOCKS_PER_SEQ
+TOTAL = int(os.environ.get("TOTAL", _default_total))
+SEED = os.environ.get("SEED", "0")
+RANGE_LO = int(os.environ.get("RANGE_LO", "0"))
+RANGE_HI = int(os.environ.get("RANGE_HI", TOTAL))
+
+if TOTAL % BLOCKS_PER_SEQ:
+    sys.exit(f"TOTAL={TOTAL} must be a multiple of NUM_TOKENS/CHUNK_SIZE "
+             f"({BLOCKS_PER_SEQ} blocks per sequence)")
+if not 0 <= RANGE_LO < RANGE_HI <= TOTAL:
+    sys.exit(f"need 0 <= RANGE_LO < RANGE_HI <= TOTAL, got "
+             f"RANGE_LO={RANGE_LO} RANGE_HI={RANGE_HI} TOTAL={TOTAL}")
+if RANGE_LO % BLOCKS_PER_SEQ or RANGE_HI % BLOCKS_PER_SEQ:
+    sys.exit(f"RANGE_LO={RANGE_LO} and RANGE_HI={RANGE_HI} must be multiples of "
+             f"{BLOCKS_PER_SEQ} (blocks per sequence)")
+
+_lo_seq, _hi_seq = RANGE_LO // BLOCKS_PER_SEQ, RANGE_HI // BLOCKS_PER_SEQ
+if _hi_seq - _lo_seq < SEQS:
+    sys.exit(f"range [{RANGE_LO},{RANGE_HI}) holds {_hi_seq - _lo_seq} sequences "
+             f"but each stimulator stores SEQ={SEQS}; widen the range, lower SEQ, "
+             "or raise TOTAL")
+
+# One window per stimulator. Seeding per-stimulator (rather than drawing from
+# one stream) keeps each server's window stable when NUM_SERVERS changes.
+windows = []
+for _i in range(1, NUM_SERVERS + 1):
+    _rng = random.Random(f"{SEED}:{_i}")
+    _start = _rng.randrange(_lo_seq, _hi_seq - SEQS + 1)
+    windows.append((_start, _start + SEQS))
 
 # Monitoring sidecars. Grafana is the only service published beyond loopback;
 # it takes a host port RANGE so compose picks a free one rather than failing on
@@ -118,7 +172,7 @@ for i in range(1, NUM_SERVERS + 1):
       --mode cpu --transfer-mode lmcache_driven
       --kvcache-shape-spec "{SHAPE_SPEC}"
       --num-tokens {NUM_TOKENS}
-      --start 0 --end {SEQS}
+      --start {windows[i - 1][0]} --end {windows[i - 1][1]}
       --interval 0.2
 """)
 
@@ -237,3 +291,17 @@ print(f"wrote {out} ({NUM_SERVERS} servers, coordinator, stimulators, "
       f"prometheus + grafana; SEQ={SEQS})")
 print(f"wrote {os.path.join(mon, 'prometheus.yml')} "
       f"({NUM_SERVERS + 1} scrape targets)")
+
+# Key-space summary: what each stimulator drew, and how much the fleet covers.
+covered = set()
+for _s, _e in windows:
+    covered.update(range(_s, _e))
+overlap = sum(e - s for s, e in windows) - len(covered)
+print(f"\nkey space: TOTAL={TOTAL} blocks "
+      f"({TOTAL // BLOCKS_PER_SEQ} sequences x {BLOCKS_PER_SEQ} blocks), "
+      f"seed={SEED}, range=[{RANGE_LO},{RANGE_HI})")
+for _i, (_s, _e) in enumerate(windows, 1):
+    print(f"  stim-{_i}: sequences [{_s},{_e})  "
+          f"blocks [{_s * BLOCKS_PER_SEQ},{_e * BLOCKS_PER_SEQ})")
+print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
+      f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")

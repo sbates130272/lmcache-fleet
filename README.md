@@ -80,6 +80,9 @@ plus real `.data` files under `data/l2-server-*/`.
 |---|---|---|
 | NUM_SERVERS | 3 | fleet size |
 | NUM_COORD | 1 | coordinators; must be 1 (v0.5.8 has no coordinator clustering) |
+| TOTAL | NUM_SERVERS×SEQ×blocks/seq | total unique blocks the fleet may address |
+| SEED | 0 | seeds where each stimulator's window lands; same seed → same layout |
+| RANGE_LO / RANGE_HI | 0 / TOTAL | optional block sub-range windows must stay inside |
 | RUN_UID / RUN_GID | your uid/gid | uid:gid every container runs as |
 | COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
 | GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind |
@@ -94,6 +97,43 @@ plus real `.data` files under `data/l2-server-*/`.
 | EVICT_WATERMARK | 0.8 | L1 fraction that triggers L2 spill |
 
 To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
+
+## Key space
+
+One stimulator per server, but no longer storing identical keys. `lmcache bench
+server` derives its KV deterministically from the sequence number, so two
+stimulators given the same `--start/--end` store byte-identical keys — which is
+what the fleet used to do, making every server a replica of the same working set.
+
+Its only key selector is a contiguous half-open `[--start, --end)` range; there
+is no `--seed` and no way to hand it a scattered set. So `gen_compose.py` holds
+the PRNG and decides where each stimulator's contiguous window lands inside a
+shared key space:
+
+- `TOTAL` — total unique blocks the fleet may address. A sequence covers
+  `NUM_TOKENS/CHUNK_SIZE` blocks, so this is converted to sequences before
+  reaching the bench.
+- `SEQ` — how many sequences each stimulator stores, i.e. its window width.
+- `SEED` — seeds the placement. Each stimulator is seeded as `SEED:i`, so a
+  server's window stays put when `NUM_SERVERS` changes. Re-running with the same
+  seed reproduces the layout exactly.
+- `RANGE_LO` / `RANGE_HI` — optional block sub-range every window must land
+  inside, for pinning the fleet onto part of a larger key space.
+
+Windows may overlap, and the overlap is the interesting part: shared blocks are
+replicated across servers while the rest are unique to one, so the coordinator's
+directory becomes a real map instead of "everything, everywhere". `gen_compose.py`
+prints each window and the resulting coverage:
+
+```text
+key space: TOTAL=160 blocks (80 sequences x 2 blocks), seed=0, range=[0,160)
+  stim-1: sequences [12,52)  blocks [24,104)
+  stim-2: sequences [30,70)  blocks [60,140)
+  fleet covers 116 unique blocks; 44 blocks replicated
+```
+
+For disjoint windows, raise `TOTAL` relative to `NUM_SERVERS × SEQ`; for heavy
+replication, lower it or narrow `RANGE_LO`/`RANGE_HI`.
 
 ## Gotchas (learned the hard way)
 
@@ -113,11 +153,14 @@ To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
   `coordinator` collide with unrelated stacks. Compose's project prefix
   (`lmcache-fleet-demo-*`) keeps the fleet to itself; service DNS names on the
   `fleet` network are unaffected.
-- The **fs L2 adapter does not report its contents**. With 80 real `.data` files
-  on disk and servers serving L2 lookup hits, `lmcache_mp_l2_usage_bytes{l2_name="fs"}`,
-  the coordinator's `tier="l2"` placements, and `GET /cache/objects?tier=l2` all
-  read zero. Judge L2 by the eviction rate, the L2 lookup-hit panels, or
-  `ls data/l2-server-*/` — not by those three.
+- **L2 accounting only covers the current process lifetime.** Nothing scans the
+  L2 backend at startup, so `.data` files left in `data/l2-server-*/` by an
+  earlier run are invisible: `lmcache_mp_l2_usage_bytes{l2_name="fs"}`, the
+  coordinator's `tier="l2"` placements, and `GET /cache/objects?tier=l2` all read
+  zero against a disk full of blobs. They populate normally once stores and
+  evictions happen while the current server and coordinator are up. If L2 reads
+  zero, check whether the spill predates the processes before concluding L2 is
+  broken — and `make clean` between runs to keep the two in step.
 - Bench clients allocate `n_kv*n_layers` tensors of NB*BS*H*D*2B each and
   migrate all of them to SHM — the old default shape (1024 blocks × 16 × 8 × 128
   × 32 layers) was ~2 GB per client and OOM-killed 3 servers on a 7 GB host.

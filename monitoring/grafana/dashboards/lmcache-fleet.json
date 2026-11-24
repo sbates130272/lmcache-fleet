@@ -207,7 +207,7 @@
       "id": 4,
       "type": "stat",
       "title": "L2 placements",
-      "description": "Key copies written through to an L2 backend. CAVEAT: with the fs adapter this reads 0 even when data/l2-server-*/ holds real .data files and servers are serving L2 hits \u2014 the fs adapter does not report its contents to the coordinator directory.",
+      "description": "Key copies written through to an L2 backend. Counts only what was written while this coordinator has been up: nothing scans L2 at startup, so .data files left by an earlier run read as 0 here.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
@@ -1252,7 +1252,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "L2 bytes per server and adapter",
-      "description": "Bytes in each attached L2 adapter. NOTE: the fs adapter reports 0 here even with real .data files on disk. To confirm L2 is actually working, use the eviction rate and the L2 lookup-hit panels below, or count files in data/l2-server-*/.",
+      "description": "Bytes in each attached L2 adapter. Like the L2 placement count, this reflects only the current process lifetime \u2014 blobs left on disk by an earlier run are not discovered at startup and read as 0.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"

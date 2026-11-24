@@ -84,10 +84,9 @@ panels = [
     stat("L1 placements", 'lmcache_coordinator_key_directory_placements{tier="l1"}', "short", 12, 0,
          desc="Key copies resident in some server's L1 DRAM tier."),
     stat("L2 placements", 'lmcache_coordinator_key_directory_placements{tier="l2"}', "short", 18, 0,
-         desc="Key copies written through to an L2 backend. CAVEAT: with the fs "
-              "adapter this reads 0 even when data/l2-server-*/ holds real .data "
-              "files and servers are serving L2 hits — the fs adapter does not "
-              "report its contents to the coordinator directory."),
+         desc="Key copies written through to an L2 backend. Counts only what was "
+              "written while this coordinator has been up: nothing scans L2 at "
+              "startup, so .data files left by an earlier run read as 0 here."),
 
     ts("Where the fleet's KV lives — placements by tier",
        [("lmcache_coordinator_key_directory_placements", "{{tier}}")],
@@ -133,10 +132,9 @@ panels = [
     ts("L2 bytes per server and adapter",
        [("lmcache_mp_l2_usage_bytes", "{{server}} · {{l2_name}}")],
        "bytes", 0, 28, overrides=SERVER_OVERRIDES,
-       desc="Bytes in each attached L2 adapter. NOTE: the fs adapter reports 0 "
-            "here even with real .data files on disk. To confirm L2 is actually "
-            "working, use the eviction rate and the L2 lookup-hit panels below, "
-            "or count files in data/l2-server-*/."),
+       desc="Bytes in each attached L2 adapter. Like the L2 placement count, this "
+            "reflects only the current process lifetime — blobs left on disk by "
+            "an earlier run are not discovered at startup and read as 0."),
 
     ts("L1 chunk writes/sec",
        [("rate(lmcache_mp_l1_write_chunks_total[1m])", "{{server}}")],
