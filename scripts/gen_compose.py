@@ -161,9 +161,25 @@ if L2_PLUGIN:
 else:
     L2_ADAPTER = _fs_spec
 L2_ADAPTER_JSON = json.dumps(L2_ADAPTER, separators=(",", ":"))
-L2_ENV = "      PYTHONPATH: /opt/lmcache-plugins\n" if L2_PLUGIN else ""
-L2_PLUGIN_MOUNT = ("      - ../plugins:/opt/lmcache-plugins:ro           # out-of-tree L2 adapter\n"
+# plugins/ holds one directory per publishable distribution, so the directory
+# itself is not importable -- each plugin's own directory is. Build PYTHONPATH
+# from every subdirectory carrying a pyproject.toml, so adding a plugin needs no
+# change here: drop the directory in and regenerate.
+_PLUGIN_MOUNT = "/opt/lmcache-plugins"
+_plugins_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "plugins")
+PLUGIN_DIRS = sorted(
+    name for name in os.listdir(_plugins_dir)
+    if os.path.isfile(os.path.join(_plugins_dir, name, "pyproject.toml"))
+) if os.path.isdir(_plugins_dir) else []
+PLUGIN_PYTHONPATH = ":".join(f"{_PLUGIN_MOUNT}/{name}" for name in PLUGIN_DIRS)
+
+L2_ENV = f"      PYTHONPATH: {PLUGIN_PYTHONPATH}\n" if L2_PLUGIN else ""
+L2_PLUGIN_MOUNT = (f"      - ../plugins:{_PLUGIN_MOUNT}:ro           # out-of-tree L2 adapters\n"
                    if L2_PLUGIN else "")
+if L2_PLUGIN and not PLUGIN_DIRS:
+    sys.exit(f"no plugin distributions found under {_plugins_dir} "
+             "(each needs its own directory with a pyproject.toml)")
 # Checksum verification compares retrieved KV against what was stored, which
 # dedup deliberately breaks for anything served from L2.
 STIM_URL = '""' if L2_DEDUP else None

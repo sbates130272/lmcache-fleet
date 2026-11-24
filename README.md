@@ -1,4 +1,4 @@
-# LMCache Fleet Demo
+# LMCache Fleet
 
 This repository contains the tools needed to generate and deploy a
 programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
