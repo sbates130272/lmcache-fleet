@@ -26,9 +26,9 @@
           "type": "prometheus",
           "uid": "lmcache-prom"
         },
-        "definition": "label_values(lmcache_directory_placements, server)",
+        "definition": "label_values(lmcache_mp_l1_usage_ratio, server)",
         "query": {
-          "query": "label_values(lmcache_directory_placements, server)",
+          "query": "label_values(lmcache_mp_l1_usage_ratio, server)",
           "refId": "server"
         },
         "refresh": 2,
@@ -716,7 +716,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_coordinator_key_directory_server_l1_keys * on(instance_id) group_left(server) label_replace(target_info{job=\"lmcache-servers\",server=~\"$server\"},\"instance_id\",\"$1\",\"service_instance_id\",\"(.*)\")",
+          "expr": "sum by (server) (lmcache_coordinator_key_directory_server_l1_keys * on(instance_id) group_left(server) label_replace(target_info{job=\"lmcache-servers\",server=~\"$server\"},\"instance_id\",\"$1\",\"service_instance_id\",\"(.*)\"))",
           "legendFormat": "{{server}}"
         }
       ]
@@ -3180,7 +3180,7 @@
       "id": 23,
       "type": "timeseries",
       "title": "Keys by Number of Servers Holding Them",
-      "description": "Replication across the fleet. Keys held by one server are unique to it; keys held by several come from overlapping stimulator windows.",
+      "description": "Replication across the registered fleet. Keys held by one server are unique to it; keys held by several come from overlapping stimulator windows. Copies left by a departed instance are not counted, so a restarted server is not a replica of its own previous run.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
@@ -3321,7 +3321,7 @@
       "id": 24,
       "type": "timeseries",
       "title": "Block Churn per Minute",
-      "description": "Blocks entering and leaving each tier, as seen between directory polls. A block that appears and disappears between two polls is not counted.",
+      "description": "Blocks entering and leaving each tier, as seen between directory polls. A block that appears and disappears between two polls is not counted. A server restart shows as L1 removed, because the coordinator fences that server's L1; it does not show as L2 removed, because the L2 blocks are still listed, so L2 removed means evicted or deleted.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
@@ -3628,6 +3628,394 @@
           },
           "expr": "sum by (accesses) (lmcache_directory_keys_by_access_count)",
           "legendFormat": "{{accesses}}"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "L2 Placements Left by Departed Instances",
+      "description": "L2 blocks the directory still lists for instances that are no longer registered. A server takes a new instance id every time it starts, and the coordinator keeps a departed instance's L2 placements on purpose, so each restart strands that run's blocks here. Shown under the name the instance had; 'unknown' is one the exporter never saw registered. Empty on a fleet that has not been restarted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 115
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "gradientMode": "none",
+            "lineInterpolation": "linear",
+            "pointSize": 8,
+            "axisBorderShow": false,
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-1"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-2"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-3"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-4"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d55181"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-6"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#0ca30c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-7"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-8"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#e66767"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (server) (lmcache_directory_departed_placements{tier=\"l2\",server=~\"$server\"})",
+          "legendFormat": "{{server}}"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "L2 Logical Bytes Left by Departed Instances",
+      "description": "Bytes behind the panel on the left. No running server counts these towards its L2 usage, so nothing evicts them: they stay until the L2 directory is cleared.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 115
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "gradientMode": "none",
+            "lineInterpolation": "linear",
+            "pointSize": 8,
+            "axisBorderShow": false,
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-1"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-2"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-3"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-4"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d55181"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-6"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#0ca30c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-7"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lmcache-server-8"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#e66767"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (server) (lmcache_directory_departed_placement_bytes{tier=\"l2\",server=~\"$server\"})",
+          "legendFormat": "{{server}}"
         }
       ]
     }

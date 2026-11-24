@@ -12,11 +12,18 @@ L1, L2 = "#3987e5", "#d95926"
 # The coordinator labels servers by UUID; the servers' own target_info carries
 # that same UUID next to the scrape's friendly `server` label. Join through it
 # so coordinator-sourced panels read as lmcache-server-N instead of a UUID.
+#
+# The sum is what keeps a restart from splitting the line. A server mints a new
+# UUID each time it starts, so the join yields one series per run, all sharing
+# a `server` value: the legend showed the same name once per restart. Summing
+# over the UUID folds the runs into one series per server.
 COORD_PER_SERVER = (
+    "sum by (server) ("
     "lmcache_coordinator_key_directory_server_l1_keys"
     " * on(instance_id) group_left(server) "
     'label_replace(target_info{job="lmcache-servers",server=~"$server"},'
     '"instance_id","$1","service_instance_id","(.*)")'
+    ")"
 )
 
 def color(name, hexv):
@@ -256,9 +263,11 @@ panels = [
         ('lmcache_directory_keys_by_replicas{replicas="2"}', "2 Servers"),
         ('lmcache_directory_keys_by_replicas{replicas="3+"}', "3+ Servers")],
        "short", 12, 61, stacked=True, fill=60, overrides=REPLICA_OVERRIDES,
-       desc="Replication across the fleet. Keys held by one server are unique "
-            "to it; keys held by several come from overlapping stimulator "
-            "windows."),
+       desc="Replication across the registered fleet. Keys held by one server "
+            "are unique to it; keys held by several come from overlapping "
+            "stimulator windows. Copies left by a departed instance are not "
+            "counted, so a restarted server is not a replica of its own "
+            "previous run."),
     ts("Block Churn per Minute",
        [('sum(rate(lmcache_directory_placements_added_total{tier="l1",server=~"$server"}[2m])) * 60',
          f"{T1} Added"),
@@ -271,11 +280,32 @@ panels = [
        "short", 0, 69, overrides=CHURN_OVERRIDES,
        desc="Blocks entering and leaving each tier, as seen between directory "
             "polls. A block that appears and disappears between two polls is "
-            "not counted."),
+            "not counted. A server restart shows as L1 removed, because the "
+            "coordinator fences that server's L1; it does not show as L2 "
+            "removed, because the L2 blocks are still listed, so L2 removed "
+            "means evicted or deleted."),
     ts("Keys by Access Count",
        [("sum by (accesses) (lmcache_directory_keys_by_access_count)", "{{accesses}}")],
        "short", 12, 69, stacked=True, fill=70, overrides=ACCESS_OVERRIDES,
        desc="How often the coordinator reports each key as accessed."),
+    ts("L2 Placements Left by Departed Instances",
+       [('sum by (server) (lmcache_directory_departed_placements{tier="l2",server=~"$server"})',
+         "{{server}}")],
+       "short", 0, 77, overrides=SERVER_OVERRIDES,
+       desc="L2 blocks the directory still lists for instances that are no "
+            "longer registered. A server takes a new instance id every time "
+            "it starts, and the coordinator keeps a departed instance's L2 "
+            "placements on purpose, so each restart strands that run's blocks "
+            "here. Shown under the name the instance had; 'unknown' is one "
+            "the exporter never saw registered. Empty on a fleet that has "
+            "not been restarted."),
+    ts("L2 Logical Bytes Left by Departed Instances",
+       [('sum by (server) (lmcache_directory_departed_placement_bytes{tier="l2",server=~"$server"})',
+         "{{server}}")],
+       "bytes", 12, 77, overrides=SERVER_OVERRIDES,
+       desc="Bytes behind the panel on the left. No running server counts "
+            "these towards its L2 usage, so nothing evicts them: they stay "
+            "until the L2 directory is cleared."),
 ]
 
 # A table legend needs more vertical room than the list one did, so re-flow the
@@ -313,13 +343,17 @@ dash = {
     "refresh": "5s",
     "time": {"from": "now-15m", "to": "now"},
     "timepicker": {},
+    # Listed from a metric the servers serve themselves, whose `server` label
+    # is the scrape config's and so is only ever a name. The directory
+    # exporter's label used to carry the UUID of every departed instance, and
+    # those series stay in Prometheus for its whole retention.
     "templating": {"list": [{
         "name": "server",
         "label": "Server",
         "type": "query",
         "datasource": DS,
-        "definition": "label_values(lmcache_directory_placements, server)",
-        "query": {"query": "label_values(lmcache_directory_placements, server)",
+        "definition": "label_values(lmcache_mp_l1_usage_ratio, server)",
+        "query": {"query": "label_values(lmcache_mp_l1_usage_ratio, server)",
                   "refId": "server"},
         "refresh": 2,
         "includeAll": True,

@@ -192,6 +192,18 @@ The coordinator's own *metrics* have no per-server view of L2:
 `main` as well as v0.5.8. The per-server L2 numbers therefore come from the
 directory exporter, which reads them from the directory listing instead.
 
+**Restarted servers.** A server takes a new instance id every time it starts.
+When one leaves, the coordinator drops its L1 placements but keeps its L2 ones
+on purpose — L2 outlives the process — so the directory goes on listing L2
+blocks owned by ids that no longer exist. The exporter's per-server metrics
+cover registered instances only, and what departed ones left behind is
+published as `lmcache_directory_departed_*` under the server name the instance
+had, charted in the last row of the dashboard. A restart therefore adds no
+series and no legend entry. Nothing evicts those blocks: no running server
+counts them towards its L2 usage, so they stay until `make clean`. A restart
+is also not counted as L2 churn, which leaves "L2 Removed" meaning evicted or
+deleted.
+
 ## Reporting on the Fleet
 
 `report.sh` output (verified on 2 servers, L1_GB=0.05, SEQ=40, 512 tokens/req):
