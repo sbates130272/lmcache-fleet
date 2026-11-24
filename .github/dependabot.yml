@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /plugins/lmcache-l2-sim
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore"
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
