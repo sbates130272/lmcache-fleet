@@ -9,10 +9,16 @@
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
 
-[![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?style=flat-square)](LICENSE)
+<!-- Not a workflow status: it links to the dashboard the smoke-test lane
+     screenshotted on its last run on main, republished to gh-pages because
+     an artifact URL is per-run and expires. Static label on purpose — the
+     smoke-test badge above already reports whether that run passed. -->
+[![Live Dashboard](https://img.shields.io/badge/Live%20Dashboard-Grafana-orange?style=flat-square&logo=grafana&logoColor=white)](https://sbates130272.github.io/lmcache-fleet/)
+
+[![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?label=License&style=flat-square)](LICENSE)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8-blue?style=flat-square)](https://github.com/LMCache/LMCache/releases/tag/v0.5.8)
-[![Image](https://img.shields.io/badge/CPU%20image-1.67%20GB-brightgreen?style=flat-square&logo=docker&logoColor=white)](docker/Dockerfile)
-[![Last Commit](https://img.shields.io/github/last-commit/sbates130272/lmcache-fleet?style=flat-square)](https://github.com/sbates130272/lmcache-fleet/commits/main)
+[![CPU Image](https://img.shields.io/badge/CPU%20Image-1.68%20GB-brightgreen?style=flat-square&logo=docker&logoColor=white)](docker/Dockerfile)
+[![Last Commit](https://img.shields.io/github/last-commit/sbates130272/lmcache-fleet?label=Last%20Commit&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/commits/main)
 
 This repository contains the tools needed to generate and deploy a
 programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
@@ -47,33 +53,29 @@ plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
 ```
 
-## A slim, CPU-only image
+## The Image
 
-The published `lmcache/standalone` is ~14.8 GB: a full CUDA toolchain on
-`nvcr.io/nvidia/cuda-dl-base`, for a fleet that never touches a GPU.
-[docker/Dockerfile](docker/Dockerfile) builds a CPU-only alternative on
-`python:3.12-slim`:
+One image, built here rather than pulled: [docker/Dockerfile](docker/Dockerfile)
+puts LMCache v0.5.8 on `python:3.12-slim` and comes out at **1.68 GB**. `make up`
+builds it on demand, so a fresh clone needs no extra step; `make image` builds it
+on its own if you want that.
 
-```bash
-docker build -f docker/Dockerfile -t lmcache-fleet-demo/lmcache:0.5.8-cpu .
-LMCACHE_IMAGE=lmcache-fleet-demo/lmcache:0.5.8-cpu make up NUM=2
-```
+This fleet never touches a GPU — the servers run `--mode cpu` and there is no
+vLLM — so the image carries no GPU runtime at all. Two things make that work.
+LMCache's dependency list requires `cupy-cuda13x`, `cuda-python`,
+`cufile-python` and `nvtx` unconditionally, but nothing on the paths this demo
+uses imports them, so the wheel is installed with `--no-deps` and the genuinely
+needed dependencies are listed explicitly. And `lmcache_native.so` links
+`libc10.so` and `libtorch_cpu.so` and nothing else, so a CPU-only torch
+satisfies it. That linkage is ABI-sensitive: the `TORCH_VERSION` build arg must
+match the torch the wheel was compiled against, or `import lmcache` fails with
+an undefined symbol. The build asserts this rather than shipping a broken image.
 
-**1.67 GB against 14.8 GB**, verified on a full fleet cycle: coordinator and
-servers healthy, stimulators exit 0, 116 keys tracked with 80 L1 and 160 L2
-placements — matching the published image exactly — and zero errors or CUDA
-banners in the logs. It is opt-in: `LMCACHE_IMAGE` still defaults to
-`lmcache/standalone`.
+Verified on a full fleet cycle: coordinator and servers healthy, stimulators
+exit 0, 116 keys tracked with 80 L1 and 160 L2 placements, and a clean log.
 
-Two things make it possible. LMCache's dependency list requires `cupy-cuda13x`,
-`cuda-python`, `cufile-python` and `nvtx` unconditionally, but nothing on the
-paths this demo uses imports them — so the wheel is installed with `--no-deps`
-and the genuinely needed dependencies are listed explicitly. And while
-`lmcache_native.so` links `libc10.so` and `libtorch_cpu.so`, it links nothing
-CUDA, so a CPU-only torch satisfies it. That linkage is ABI-sensitive: the
-`TORCH_VERSION` build arg must match the torch the wheel was compiled against,
-or `import lmcache` fails with an undefined symbol. The build asserts this
-rather than shipping a broken image.
+`LMCACHE_IMAGE` still overrides the tag if you want to point the fleet at some
+other build, but nothing here is tested against one.
 
 ## Dummy L2: Many KV Blocks with Almost No Disk
 
@@ -213,26 +215,31 @@ plus `docker compose config` on the Dockerfile and the *generated* compose file
 in the generator).
 
 The fourth, `lmcache-fleet - Smoke Test`, runs a real two-server fleet on a
-GitHub runner in roughly two minutes:
+GitHub runner. Measured: 4m46s cold, of which 2m31s was the image build, so
+roughly 2m40s once the layer cache is warm.
 
 ```bash
 L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=40
 ```
 
-Three things make that fit. The slim CPU-only image is **built** in-workflow
-with a buildx `type=gha` cache rather than pulling the 14.8 GB published one —
-about 40s on a warm cache, and it means the Dockerfile is continuously tested.
+The image is built in-workflow behind a buildx `type=gha` cache, which means
+the Dockerfile is continuously tested rather than only when someone remembers.
 `L1_GB=0.05` makes 40 sequences overflow L1, so the run exercises the eviction
 and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
 L2 through the sim adapter, so the spill costs ~1 MB per server instead of
 ~81 MB — the runner's disk never becomes the constraint.
 
-The lane then asserts on the key directory with `make check` and uploads a
-screenshot of the live Grafana dashboard as a build artifact. That artifact is
-the only evidence that the whole monitoring chain worked: Prometheus scraped
-the exporter, the exporter read the coordinator, and the panels rendered it. A
-green check cannot show that; the image can. On failure it uploads fleet logs
-and a container listing instead.
+The lane then asserts on the key directory with `make check` and screenshots
+the live Grafana dashboard. That image is the only evidence the whole
+monitoring chain worked: Prometheus scraped the exporter, the exporter read
+the coordinator, and the panels rendered it. A green check cannot show that.
+
+Every run uploads it as a build artifact, so a PR's own dashboard can be
+inspected before merge. Runs on `main` additionally publish it to
+[**the dashboard page**](https://sbates130272.github.io/lmcache-fleet/) on the
+`gh-pages` branch — artifact URLs are per-run and expire, so that is what the
+README badge can point at and what always shows the current dashboard. On
+failure the lane uploads fleet logs and a container listing instead.
 
 ## Tunables (Environment Variables)
 
@@ -309,13 +316,6 @@ replication, lower it or narrow `RANGE_LO`/`RANGE_HI`.
   defaults to uid 1000 (`lmcache`), which only happens to be right when your own
   uid is 1000. A non-1000 uid has no `/etc/passwd` entry
   and lands on `HOME=/`, so the services set `HOME=/tmp`.
-- The published `lmcache/standalone` image is ~14.8 GB and its `ENTRYPOINT` is
-  `/opt/nvidia/nvidia_entrypoint.sh`: CUDA banners, GPU-driver probes, and a
-  CPU-capability check that misfires on this AMD host and `sleep 2`s on every
-  container start. Those stray `ERROR: ... AVX instruction set` lines in the
-  logs come from it, not from LMCache. gen_compose sets `entrypoint: [""]` so
-  nothing runs before `lmcache`; see the slim image above to drop the CUDA base
-  entirely.
 - Don't use `container_name:` here — it is node-global, and names like
   `coordinator` collide with unrelated stacks. Compose's project prefix
   (`lmcache-fleet-demo-*`) keeps the fleet to itself; service DNS names on the

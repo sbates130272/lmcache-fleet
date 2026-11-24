@@ -175,7 +175,7 @@ if NUM_COORD != 1:
     sys.exit(f"NUM_COORD={NUM_COORD}: LMCache {os.environ.get('LMCACHE_VERSION', 'v0.5.8')} "
              "supports exactly one coordinator per fleet")
 
-IMAGE        = os.environ.get("LMCACHE_IMAGE", "lmcache/standalone:v0.5.8")
+IMAGE        = os.environ.get("LMCACHE_IMAGE", "lmcache-fleet-demo/lmcache:0.5.8-cpu")
 CHUNK_SIZE   = int(os.environ.get("CHUNK_SIZE", "256"))
 L1_GB        = float(os.environ.get("L1_GB", "1"))
 SEQS         = int(os.environ.get("SEQ", "6"))          # distinct synthetic sequences per stimulator
@@ -198,11 +198,9 @@ RUN_UID = os.environ.get("RUN_UID", str(os.getuid()))
 RUN_GID = os.environ.get("RUN_GID", str(os.getgid()))
 RUN_AS = f'    user: "{RUN_UID}:{RUN_GID}"\n    environment:\n      HOME: /tmp\n'
 
-# The lmcache image is built on NVIDIA's NGC PyTorch base, whose ENTRYPOINT is
-# /opt/nvidia/nvidia_entrypoint.sh: CUDA banners, GPU-driver probes and a CPU
-# capability check that misfires on this host and sleeps 2s per container
-# start. This fleet is CPU-only -- no GPU, no vLLM -- so none of it applies.
-# Skip it and exec lmcache directly.
+# docker/Dockerfile deliberately sets no ENTRYPOINT, so the command compose
+# passes is what runs. This clears any ENTRYPOINT anyway, which costs nothing
+# and keeps an overridden LMCACHE_IMAGE from running something before lmcache.
 NO_ENTRYPOINT = '    entrypoint: [""]\n'
 
 # Compose project name: scopes the network, volumes and container names so a

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lmcache-l2-sim"
 version = "0.1.0"
-description = "L2 tier simulator for LMCache MP: model a large, slow L2 backend without the disk or the wait"
+description = "L2 tier simulator for LMCache MP: model a large L2 backend without spending the disk"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

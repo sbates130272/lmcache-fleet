@@ -1,26 +1,21 @@
 # syntax=docker/dockerfile:1
 #
-# Slim, CPU-only LMCache image for this demo.
+# The LMCache image this demo runs on: CPU-only, ~1.7 GB.
 #
-# The published lmcache/standalone image is built on nvcr.io/nvidia/cuda-dl-base
-# and weighs ~14.8 GB: a full CUDA toolchain, plus an NVIDIA entrypoint that
-# prints CUDA banners and probes for GPU drivers. This fleet never touches a
-# GPU -- the servers run `--mode cpu`, there is no vLLM -- so all of that is
-# dead weight.
-#
-# Two things make a slim build possible:
+# This fleet never touches a GPU -- the servers run `--mode cpu` and there is
+# no vLLM -- so the image carries no GPU runtime at all. Two things make that
+# possible:
 #   * lmcache's own code has no unguarded `import cupy / nvtx / cuda` on the
 #     paths this demo uses, even though its dependency list requires those
 #     packages unconditionally. So the wheel is installed with --no-deps and
 #     the genuinely needed dependencies are listed explicitly below.
-#   * lmcache_native.so links libc10.so and libtorch_cpu.so, but nothing CUDA.
+#   * lmcache_native.so links libc10.so and libtorch_cpu.so and nothing else.
 #     A CPU-only torch satisfies it -- provided the version matches the one the
 #     wheel was built against, since that linkage is ABI-sensitive.
 #
-# Build (from the repo root):
+# `make up` builds this on demand, so there is normally nothing to run by hand.
+# To build it directly, from the repo root:
 #   docker build -f docker/Dockerfile -t lmcache-fleet-demo/lmcache:0.5.8-cpu .
-# Then point the fleet at it:
-#   LMCACHE_IMAGE=lmcache-fleet-demo/lmcache:0.5.8-cpu make up
 
 ARG PYTHON_VERSION=3.12
 FROM python:${PYTHON_VERSION}-slim
@@ -40,19 +35,21 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}" \
     VIRTUAL_ENV=/opt/venv
 
-# CPU torch, from PyTorch's CPU index rather than PyPI (whose default Linux
-# wheel is the CUDA build and drags in ~3 GB of nvidia-* packages).
+# CPU torch, from PyTorch's CPU index rather than PyPI, whose default Linux
+# wheel is the GPU build and drags in ~3 GB of accelerator runtime packages.
 RUN pip install --index-url https://download.pytorch.org/whl/cpu \
         "torch==${TORCH_VERSION}"
 
 # lmcache itself, without its dependency closure.
 RUN pip install --no-deps "lmcache==${LMCACHE_VERSION}"
 
-# lmcache's real runtime dependencies, minus the CUDA-only ones it requires
-# unconditionally (cupy-cuda13x, cuda-python, cufile-python, nvtx) and minus
-# pytest. Optional-backend packages (awscrt, redis, google-cloud-bigtable) are
-# kept because the L2 adapter factory imports them lazily by name, and a
-# missing one turns into a confusing runtime error rather than a clean skip.
+# lmcache's real runtime dependencies, minus the GPU-only ones it requires
+# unconditionally (cupy-cuda13x, cuda-python, cufile-python, nvtx).
+# Optional-backend packages (awscrt, redis, google-cloud-bigtable) are kept
+# because the L2 adapter factory imports them lazily by name, and a missing one
+# turns into a confusing runtime error rather than a clean skip. pytest is here
+# because the plugin suites need both it and lmcache importable in the same
+# interpreter -- that is what `make test-plugins` runs.
 RUN pip install \
         aiofile \
         aiofiles \
@@ -80,6 +77,7 @@ RUN pip install \
         "protobuf<7,>=6.31.1" \
         psutil \
         py-cpuinfo \
+        "pytest>=7" \
         pyyaml \
         "pyzmq>=25.0.0" \
         redis \
@@ -91,8 +89,9 @@ RUN pip install \
         uvicorn
 
 # Fail the build rather than ship an image whose native extension cannot load.
-RUN python -c "import torch, lmcache; from lmcache.lmcache_native import Bitmap; \
-print('torch', torch.__version__, '| cuda', torch.cuda.is_available())" \
+RUN python -c "import torch, lmcache, pytest; \
+from lmcache.lmcache_native import Bitmap; \
+print('torch', torch.__version__, '| accelerator', torch.cuda.is_available())" \
     && lmcache --help > /dev/null
 
 # No ENTRYPOINT on purpose: the point of this image is that nothing runs before

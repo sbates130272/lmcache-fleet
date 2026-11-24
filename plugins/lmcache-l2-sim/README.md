@@ -1,8 +1,7 @@
 # lmcache-l2-sim
 
-An L2 adapter for LMCache MP that models a large, slow L2 tier without
-spending the disk. It wraps the stock `fs` (or `fs_native`) adapter and adds
-two things:
+An L2 adapter for LMCache MP that models a large L2 tier without spending the
+disk. It wraps the stock `fs` (or `fs_native`) adapter and adds two things:
 
 - **Dedup.** Writes run through the inner adapter unchanged. When a store
   completes, each file it wrote is replaced by a hardlink (or symlink) to one
@@ -72,8 +71,8 @@ Notes:
   file per size.
 - Dedup needs an inner adapter with a `base_path` (`fs` or `fs_native`). With
   `dedup: false` the adapter wraps any inner adapter for latency only.
-- A delay is added to the completion LMCache observes; it does not slow the
-  underlying I/O. Lookups are not delayed.
+- A delay is added to the completion LMCache observes; the underlying I/O runs
+  at its own pace. Lookups are not delayed.
 - Usage and eviction accounting are the inner adapter's, so LMCache sees
   logical bytes as if nothing were deduplicated.
 - `GET /status` on the server reports the adapter's counters under `dedup`:
@@ -92,7 +91,7 @@ or directly:
 ```bash
 docker run --rm -v "$PWD/plugins:/plugins:ro" -e HOME=/tmp \
   -e PYTHONPATH=/plugins/lmcache-l2-sim --entrypoint "" \
-  lmcache/standalone:v0.5.8 \
+  lmcache-fleet-demo/lmcache:0.5.8-cpu \
   /opt/venv/bin/python -m pytest /plugins/lmcache-l2-sim/tests -q
 ```
 
