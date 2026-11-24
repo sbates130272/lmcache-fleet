@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Dedup + latency L2 adapter: model a large, slow L2 tier without the disk.
+L2 tier simulator: model a large, slow L2 backend without the disk or the wait.
 
 Wraps a real inner L2 adapter (``fs`` or ``fs_native``) and changes two things
 about it, both for capacity modelling and diagnostics, never for production:
@@ -20,10 +20,10 @@ about it, both for capacity modelling and diagnostics, never for production:
 
 It can be used two ways without changing this file:
 
-- in tree, as ``{"type": "dedup", "inner": {...}, ...}``;
+- in tree, as ``{"type": "l2_sim", "inner": {...}, ...}``;
 - out of tree, through the plugin loader, as ``{"type": "plugin",
-  "module_path": "lmcache_dedup.dedup_l2_adapter", "class_name":
-  "DedupL2Adapter", "adapter_params": {"inner": {...}, ...}}``.
+  "module_path": "lmcache_l2_sim.l2_sim_adapter", "class_name":
+  "L2SimAdapter", "adapter_params": {"inner": {...}, ...}}``.
 """
 
 # Future
@@ -92,7 +92,7 @@ def _non_negative_number(d: dict, name: str) -> float:
     return float(value)
 
 
-class DedupL2AdapterConfig(L2AdapterConfigBase):
+class L2SimAdapterConfig(L2AdapterConfigBase):
     """
     Config for the dedup + latency L2 adapter.
 
@@ -142,7 +142,7 @@ class DedupL2AdapterConfig(L2AdapterConfigBase):
         self.seed = seed
 
     @classmethod
-    def from_dict(cls, d: dict) -> "DedupL2AdapterConfig":
+    def from_dict(cls, d: dict) -> "L2SimAdapterConfig":
         """Parse a dedup adapter spec, building the inner config too.
 
         The ``"inner"`` sub-dict is dispatched through the L2 adapter config
@@ -154,7 +154,7 @@ class DedupL2AdapterConfig(L2AdapterConfigBase):
             d: The adapter spec dict (see the class docstring for fields).
 
         Returns:
-            A populated ``DedupL2AdapterConfig``.
+            A populated ``L2SimAdapterConfig``.
 
         Raises:
             ValueError: If ``inner`` is missing or malformed, the inner type
@@ -240,7 +240,7 @@ class DedupL2AdapterConfig(L2AdapterConfigBase):
             "per MiB transferred (default 0)\n"
             "- delay_jitter (float): fractional jitter in [0, 1] (default 0)\n"
             "- seed (int): jitter seed (default 0)\n"
-            'Example: {"type": "dedup", "inner": {"type": "fs", '
+            'Example: {"type": "l2_sim", "inner": {"type": "fs", '
             '"base_path": "/data/l2"}, "read_delay_ms": 5}'
         )
 
@@ -254,7 +254,7 @@ class DedupL2AdapterConfig(L2AdapterConfigBase):
 # -----------------------------------------------------------------------------
 
 
-class DedupL2Adapter(L2AdapterInterface):
+class L2SimAdapter(L2AdapterInterface):
     """Decorator over an inner L2 adapter that dedups its files and adds latency.
 
     Lookup, unlock, delete, listing, usage and the listener funnel delegate to
@@ -265,11 +265,11 @@ class DedupL2Adapter(L2AdapterInterface):
 
     # Lets the plugin loader find the config class by attribute as well as by
     # the ``<class_name>Config`` naming convention.
-    config_class_name = "DedupL2AdapterConfig"
+    config_class_name = "L2SimAdapterConfig"
 
     def __init__(
         self,
-        config: DedupL2AdapterConfig,
+        config: L2SimAdapterConfig,
         l1_memory_desc: "Optional[L1MemoryDesc]" = None,
     ) -> None:
         """Build the inner adapter from ``config`` and start the pump.
@@ -342,7 +342,7 @@ class DedupL2Adapter(L2AdapterInterface):
         self._pump.start()
 
         logger.warning(
-            "DedupL2Adapter ACTIVE (dedup=%s link_mode=%s canonical_dir=%s "
+            "L2SimAdapter ACTIVE (dedup=%s link_mode=%s canonical_dir=%s "
             "write_delay_ms=%g+%g/MiB read_delay_ms=%g+%g/MiB jitter=%g seed=%d) "
             "wrapping %s -- L2 contents are NOT the stored KV; modelling/"
             "diagnostic use only.",
@@ -417,7 +417,7 @@ class DedupL2Adapter(L2AdapterInterface):
             except OSError as e:
                 errors += 1
                 logger.warning(
-                    "DedupL2Adapter could not collapse %s (%s); keeping the "
+                    "L2SimAdapter could not collapse %s (%s); keeping the "
                     "real file",
                     path.name,
                     e,
@@ -516,7 +516,7 @@ class DedupL2Adapter(L2AdapterInterface):
                 self._collect(now)
                 next_release = self._release_due(time.monotonic())
             except Exception:
-                logger.exception("DedupL2Adapter pump iteration failed")
+                logger.exception("L2SimAdapter pump iteration failed")
                 next_release = None
             if next_release is None:
                 timeout_ms = _PUMP_IDLE_TIMEOUT_MS
@@ -681,28 +681,28 @@ class DedupL2Adapter(L2AdapterInterface):
 # -----------------------------------------------------------------------------
 #
 # Registering here is what an in-tree copy of this file needs; it is harmless
-# (and lets ``{"type": "dedup"}`` work once the module is imported) when the
+# (and lets ``{"type": "l2_sim"}`` work once the module is imported) when the
 # file is loaded out of tree through the plugin adapter.
 
-register_l2_adapter_type("dedup", DedupL2AdapterConfig)
+register_l2_adapter_type("l2_sim", L2SimAdapterConfig)
 
 
-def _create_dedup_adapter(
+def _create_l2_sim_adapter(
     config: L2AdapterConfigBase,
     l1_memory_desc: "Optional[L1MemoryDesc]" = None,
 ) -> L2AdapterInterface:
-    """Create a ``DedupL2Adapter`` from a ``DedupL2AdapterConfig``.
+    """Create a ``L2SimAdapter`` from a ``L2SimAdapterConfig``.
 
     Args:
-        config: The parsed adapter config; must be a ``DedupL2AdapterConfig``.
+        config: The parsed adapter config; must be a ``L2SimAdapterConfig``.
         l1_memory_desc: Optional L1 memory descriptor, forwarded to the inner
             adapter's factory.
 
     Returns:
-        A ``DedupL2Adapter`` wrapping the freshly built inner adapter.
+        A ``L2SimAdapter`` wrapping the freshly built inner adapter.
     """
-    assert isinstance(config, DedupL2AdapterConfig)
-    return DedupL2Adapter(config, l1_memory_desc)
+    assert isinstance(config, L2SimAdapterConfig)
+    return L2SimAdapter(config, l1_memory_desc)
 
 
-register_l2_adapter_factory("dedup", _create_dedup_adapter)
+register_l2_adapter_factory("l2_sim", _create_l2_sim_adapter)

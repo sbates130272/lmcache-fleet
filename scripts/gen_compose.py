@@ -129,7 +129,7 @@ for _i in range(1, NUM_SERVERS + 1):
 
 # ---------------- L2 backend -------------------------------------------------
 # Stock: the fs adapter, real bytes on disk. With L2_DEDUP=1 (or any L2 delay)
-# the fs adapter is wrapped by plugins/lmcache_dedup, loaded through LMCache's
+# the fs adapter is wrapped by plugins/lmcache_l2_sim, loaded through LMCache's
 # built-in `plugin` adapter type: every key keeps a unique filename, but all
 # files of one size share a single canonical file, so large block counts cost
 # almost no disk. L2 reads then return that canonical block rather than the
@@ -148,8 +148,8 @@ _fs_spec = {"type": "fs", "base_path": "/data/l2"}
 if L2_PLUGIN:
     L2_ADAPTER = {
         "type": "plugin",
-        "module_path": "lmcache_dedup.dedup_l2_adapter",
-        "class_name": "DedupL2Adapter",
+        "module_path": "lmcache_l2_sim.l2_sim_adapter",
+        "class_name": "L2SimAdapter",
         "adapter_params": {
             "inner": _fs_spec,
             "dedup": L2_DEDUP,
@@ -474,7 +474,7 @@ print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
       f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")
 if L2_PLUGIN:
     _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
-    print(f"L2: fs wrapped by lmcache_dedup "
+    print(f"L2: fs wrapped by lmcache_l2_sim "
           f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
           f"{' — L2 contents are fake, bench checksum verification off' if L2_DEDUP else ''}")
 else:

@@ -1,4 +1,4 @@
-# lmcache-dedup-l2
+# lmcache-l2-sim
 
 An L2 adapter for LMCache MP that models a large, slow L2 tier without
 spending the disk. It wraps the stock `fs` (or `fs_native`) adapter and adds
@@ -34,8 +34,8 @@ pip install ./plugins            # into the environment LMCache runs in
 ```bash
 lmcache server ... --l2-adapter '{
   "type": "plugin",
-  "module_path": "lmcache_dedup.dedup_l2_adapter",
-  "class_name": "DedupL2Adapter",
+  "module_path": "lmcache_l2_sim.l2_sim_adapter",
+  "class_name": "L2SimAdapter",
   "adapter_params": {
     "inner": {"type": "fs", "base_path": "/data/l2"},
     "read_delay_ms": 5
@@ -79,11 +79,33 @@ Notes:
 - `GET /status` on the server reports the adapter's counters under `dedup`:
   files collapsed, bytes saved, collapse errors, completions currently held.
 
+## Tests
+
+The tests need LMCache importable, so they run inside an image that has it:
+
+```bash
+make test-plugins          # from the repo root
+```
+
+or directly:
+
+```bash
+docker run --rm -v "$PWD/plugins:/plugins:ro" -e HOME=/tmp \
+  -e PYTHONPATH=/plugins/lmcache-l2-sim --entrypoint "" \
+  lmcache/standalone:v0.5.8 \
+  /opt/venv/bin/python -m pytest /plugins/lmcache-l2-sim/tests -q
+```
+
+They cover config parsing and rejection, the plugin loader's config-class
+discovery, adapter-type registration, the delay arithmetic including jitter
+bounds, and the collapse itself: hardlink and symlink modes, per-size
+separation, idempotence, missing files, and the reported counters.
+
 ## Upstreaming
 
 The module is written to drop into LMCache unchanged, modelled on the in-tree
-`fault_inject` adapter: copy `lmcache_dedup/dedup_l2_adapter.py` to
+`fault_inject` adapter: copy `lmcache_l2_sim/l2_sim_adapter.py` to
 `lmcache/v1/distributed/l2_adapters/`. It already registers itself as adapter
 type `dedup`, so in tree the spec is simply
-`{"type": "dedup", "inner": {...}, ...}`. The in-tree change would also need
+`{"type": "l2_sim", "inner": {...}, ...}`. The in-tree change would also need
 the module added to the factory's lazy-import list, and tests.

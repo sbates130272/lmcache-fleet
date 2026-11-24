@@ -6,7 +6,7 @@ its own.
 
 | directory | distribution | what it does |
 | --- | --- | --- |
-| [lmcache-dedup-l2](lmcache-dedup-l2/) | `lmcache-dedup-l2` | L2 adapter that dedups stored files onto one canonical file per size, and can add configurable store/load latency |
+| [lmcache-l2-sim](lmcache-l2-sim/) | `lmcache-l2-sim` | Simulates a large, slow L2 tier: collapses stored files onto one canonical file per size, and injects configurable store/load latency |
 
 ## Using them in this demo
 
@@ -19,8 +19,8 @@ resolves by dotted module path:
 
 ```json
 {"type": "plugin",
- "module_path": "lmcache_dedup.dedup_l2_adapter",
- "class_name": "DedupL2Adapter",
+ "module_path": "lmcache_l2_sim.l2_sim_adapter",
+ "class_name": "L2SimAdapter",
  "adapter_params": {"inner": {"type": "fs", "base_path": "/data/l2"}}}
 ```
 
@@ -37,7 +37,7 @@ plugins/
 ```
 
 Keep the import package name distinct from the distribution name's hyphens
-(`lmcache-dedup-l2` ships `lmcache_dedup`), and distinct from every other
+(`lmcache-l2-sim` ships `lmcache_l2_sim`), and distinct from every other
 plugin here — two plugins exporting the same module name would shadow each
 other on `PYTHONPATH`.
 
@@ -46,7 +46,13 @@ other on `PYTHONPATH`.
 Each directory builds and uploads on its own:
 
 ```bash
-cd plugins/lmcache-dedup-l2
-python -m build
+cd plugins/lmcache-l2-sim
+rm -rf dist                      # stale artifacts would be uploaded too
+python3 -m build
+twine check dist/*
+twine upload --repository testpypi dist/*    # rehearse first
 twine upload dist/*
 ```
+
+A name can only be used once on PyPI, so check `twine check` passes and the
+TestPyPI upload installs before claiming the real name.

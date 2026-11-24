@@ -26,7 +26,7 @@ make targets pass `-f` themselves.
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
 scripts/     gen_compose.py (writes the compose file), report.sh
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
-plugins/     lmcache_dedup, the out-of-tree dedup + latency L2 adapter
+plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
 ```
 
@@ -60,7 +60,7 @@ rather than shipping a broken image.
 
 ## Dummy L2: Many KV Blocks with Almost No Disk
 
-`L2_DEDUP=1` wraps the `fs` L2 adapter with [plugins/lmcache_dedup](plugins/),
+`L2_DEDUP=1` wraps the `fs` L2 adapter with [plugins/lmcache_l2_sim](plugins/),
 an out-of-tree adapter loaded through LMCache's built-in `plugin` type (no image
 rebuild). The server stores exactly as before and still believes every key is
 its own file, but once each write completes the file is replaced by a hardlink

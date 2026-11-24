@@ -1,5 +1,7 @@
 # LMCache Fleet Demo — see scripts/gen_compose.py
 COMPOSE := docker compose -f docker/docker-compose.yml
+# Tests need lmcache importable; the published image also ships pytest.
+LMCACHE_IMAGE ?= lmcache/standalone:v0.5.8
 NUM ?= 3
 SEQ ?= 8
 
@@ -11,7 +13,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim run dash targets report down clean logs
+.PHONY: help gen up stim run dash targets report test-plugins down clean logs
 
 ##@ Fleet Lifecycle
 
@@ -32,6 +34,15 @@ stim: gen ## Run the one-shot bench stimulators to store KV chunks
 # this does both. The stimulators wait on the servers' healthchecks either way.
 run: up stim ## Start the fleet and immediately run the stimulators
 	@echo "fleet running; 'make report NUM=$(NUM)' or 'make dash' to watch"
+
+test-plugins: ## Run the plugin test suites inside the lmcache image
+	@docker run --rm \
+		-v "$(CURDIR)/plugins:/plugins:ro" \
+		-e HOME=/tmp -e PYTHONPATH=/plugins/lmcache-l2-sim \
+		-e LMCACHE_DISABLE_BANNER=1 \
+		--entrypoint "" --user "$(shell id -u):$(shell id -g)" \
+		$(LMCACHE_IMAGE) \
+		sh -c '/opt/venv/bin/python -m pytest /plugins/*/tests -q -p no:cacheprovider'
 
 ##@ Inspection
 
