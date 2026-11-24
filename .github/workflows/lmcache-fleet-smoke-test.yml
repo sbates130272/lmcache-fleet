@@ -18,18 +18,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The verified recipe from the README: 2 servers, an L1 small enough that 40
-  # sequences overflow it, and dedup on so the L2 spill costs ~1 MB per server
-  # instead of ~81 MB. Both tiers end up populated, which is what makes this a
-  # fleet test rather than a start-up test.
-  NUM: 2
-  SEQ: 40
+  # Two fleet shapes. A PR gates the merge, so it runs the small verified
+  # recipe from the README -- 2 servers, 40 sequences -- and stays quick. A
+  # push to main gates nothing and is what the published dashboard comes from,
+  # so it runs wider and longer: 4 servers and 5x the sequences, which is also
+  # the only place the fleet is exercised past the 2-server case.
+  NUM: ${{ github.event_name == 'push' && 4 || 2 }}
+  SEQ: ${{ github.event_name == 'push' && 200 || 40 }}
+  # L1 small enough that the sequences overflow it, and dedup on so the L2
+  # spill costs ~1 MB per server instead of ~81 MB. Both tiers end up
+  # populated, which is what makes this a fleet test rather than a start-up
+  # test.
   L1_GB: 0.05
   L2_DEDUP: 1
   LMCACHE_IMAGE: lmcache-fleet-demo/lmcache:0.5.8-cpu
   # The 15s default needs two polls, and therefore half a minute, before the
-  # directory-exporter panels have a line to draw. The screenshot is taken off
-  # a fleet about a minute old, so poll faster rather than wait for it.
+  # directory-exporter panels have a line to draw.
   DIRECTORY_POLL: 5
 
 jobs:
@@ -72,7 +76,9 @@ jobs:
       # the same path a local run takes. The stimulators are one-shot and wait
       # on the servers' healthchecks themselves.
       - name: Start the fleet and run the stimulators
-        run: make run NUM=$NUM SEQ=$SEQ
+        run: |
+          echo "FLEET_START=$(date +%s)" >> "$GITHUB_ENV"
+          make run NUM=$NUM SEQ=$SEQ
 
       # Resolved through compose rather than by guessing the generated
       # <project>-<service>-1 container name, which the generator is free to
@@ -96,8 +102,16 @@ jobs:
       # Proof the monitoring half of the stack works end to end: Prometheus
       # scraped the exporter, the exporter read the coordinator, and the
       # dashboard rendered it. A green check cannot show that; the image can.
+      # The dashboard window is set to the fleet's actual lifetime, rounded up
+      # a minute. A fixed range leaves the run as a spike at the right edge of
+      # otherwise empty charts, and Grafana prints the range it is showing, so
+      # matching it is also what makes the screenshot state its own period.
       - name: Screenshot the Grafana dashboard
-        run: make shot SHOT=grafana.png SETTLE=20
+        run: |
+          mins=$(( ( $(date +%s) - FLEET_START ) / 60 + 1 ))
+          echo "fleet has been up ~${mins}m; capturing that window"
+          echo "WINDOW_MINS=$mins" >> "$GITHUB_ENV"
+          make shot SHOT=grafana.png SETTLE=20 WINDOW="${mins}m"
 
       # Kept for PR runs, where there is nothing to publish to: the artifact is
       # how you see a PR's own dashboard before it merges.
@@ -132,8 +146,9 @@ jobs:
           <header>
             <strong>LMCache Fleet</strong> — Grafana dashboard from the last
             <a href="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}">smoke-test run</a>
-            on main (<code>${GITHUB_SHA}</code>), a two-server fleet with L1 and
-            L2 both populated.
+            on main (<code>${GITHUB_SHA}</code>): a ${NUM}-server fleet storing
+            ${SEQ} sequences each, with L1 and L2 both populated. The dashboard
+            covers the fleet's whole lifetime, about ${WINDOW_MINS} minute(s).
           </header>
           <img src="grafana-dashboard.png" alt="LMCache fleet Grafana dashboard">
           HTML

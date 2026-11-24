@@ -28,11 +28,17 @@ def main():
     # networkidle wait returns before the graphs have data on them.
     ap.add_argument("--settle", type=float, default=8,
                     help="seconds to let panels finish querying before capture")
+    # Should match how long the fleet has actually been up. Too wide and the
+    # run is a spike at the right edge of otherwise empty charts; this is also
+    # the range Grafana prints in the top-right, so a matched window makes the
+    # screenshot state the period it covers.
+    ap.add_argument("--window", default="15m",
+                    help="dashboard time range, as a Grafana offset (e.g. 6m)")
     args = ap.parse_args()
 
-    # kiosk drops the nav chrome; the time range is widened so a fleet only a
-    # couple of minutes old is not a flat line against Grafana's 6h default.
-    url = f"{args.url.rstrip('/')}/?kiosk&from=now-15m&to=now&refresh=5s"
+    # kiosk drops the nav chrome.
+    url = (f"{args.url.rstrip('/')}/?kiosk"
+           f"&from=now-{args.window}&to=now&refresh=5s")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()

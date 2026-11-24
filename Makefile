@@ -7,6 +7,7 @@ NUM ?= 3
 SEQ ?= 8
 SHOT ?= grafana.png
 SETTLE ?= 8
+WINDOW ?= 15m
 
 define TARGETS_PY
 import json, sys
@@ -74,7 +75,8 @@ check: ## Assert every server registered and holds both L1 and L2 placements
 shot: ## Screenshot the Grafana dashboard to SHOT (needs playwright chromium)
 	@port=$$($(COMPOSE) port grafana 3000 2>/dev/null | cut -d: -f2); \
 	if [ -z "$$port" ]; then echo "grafana is not running — try 'make up'"; exit 1; fi; \
-	python3 scripts/grafana_shot.py "http://localhost:$$port" -o $(SHOT) --settle $(SETTLE)
+	python3 scripts/grafana_shot.py "http://localhost:$$port" -o $(SHOT) \
+		--settle $(SETTLE) --window $(WINDOW)
 
 logs: ## Follow logs from every service
 	$(COMPOSE) logs -f --tail=100

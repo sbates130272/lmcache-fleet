@@ -35,7 +35,7 @@ make stim NUM=4 SEQ=20          # make stores
 make report NUM=4               # directory: per-instance L1/L2 placements
 make check NUM=4                # same directory, as a pass/fail assertion
 make dash                       # Grafana URL (compose picks a free host port)
-make shot SHOT=grafana.png      # screenshot the dashboard (needs playwright)
+make shot SHOT=x.png WINDOW=5m  # screenshot the dashboard (needs playwright)
 ```
 
 The compose file is generated into `docker/`, so plain `docker compose ...` from
@@ -214,25 +214,37 @@ plus `docker compose config` on the Dockerfile and the *generated* compose file
 (both the stock and `L2_DEDUP=1` variants, since dedup takes a different branch
 in the generator).
 
-The fourth, `lmcache-fleet - Smoke Test`, runs a real two-server fleet on a
-GitHub runner. Measured: 4m46s cold, of which 2m31s was the image build, so
-roughly 2m40s once the layer cache is warm.
+The fourth, `lmcache-fleet - Smoke Test`, runs a real fleet on a GitHub runner,
+in one of two shapes:
 
 ```bash
+# on a PR -- gates the merge, so it stays small and quick
 L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=40
+# on main -- gates nothing, and is where the published dashboard comes from
+L2_DEDUP=1 L1_GB=0.05 make run NUM=4 SEQ=200
 ```
+
+The PR shape is the verified recipe above; measured at 4m46s cold, of which
+2m31s was the image build, so roughly 2m40s once the layer cache is warm. The
+`main` shape is the only place the fleet is exercised past two servers, and it
+runs long enough that the dashboard has a real curve on it rather than a spike.
 
 The image is built in-workflow behind a buildx `type=gha` cache, which means
 the Dockerfile is continuously tested rather than only when someone remembers.
-`L1_GB=0.05` makes 40 sequences overflow L1, so the run exercises the eviction
+`L1_GB=0.05` makes the sequences overflow L1, so the run exercises the eviction
 and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
 L2 through the sim adapter, so the spill costs ~1 MB per server instead of
-~81 MB — the runner's disk never becomes the constraint.
+hundreds — the runner's disk never becomes the constraint.
 
 The lane then asserts on the key directory with `make check` and screenshots
 the live Grafana dashboard. That image is the only evidence the whole
 monitoring chain worked: Prometheus scraped the exporter, the exporter read
 the coordinator, and the panels rendered it. A green check cannot show that.
+
+The dashboard window is set to the fleet's actual lifetime rather than a fixed
+range, so the charts are full rather than a spike at the right edge — and since
+Grafana prints the range it is showing, the screenshot states its own period.
+`make shot` takes the same `WINDOW` if you are capturing one by hand.
 
 Every run uploads it as a build artifact, so a PR's own dashboard can be
 inspected before merge. Runs on `main` additionally publish it to
