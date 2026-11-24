@@ -43,16 +43,46 @@ other on `PYTHONPATH`.
 
 ## Publishing
 
-Each directory builds and uploads on its own:
+Each directory is its own distribution, built and uploaded on its own. From the
+repo root:
 
 ```bash
-cd plugins/lmcache-l2-sim
-rm -rf dist                      # stale artifacts would be uploaded too
-python3 -m build
-twine check dist/*
-twine upload --repository testpypi dist/*    # rehearse first
-twine upload dist/*
+make dist                                  # build + twine check, every plugin
+make dist PLUGIN=lmcache-l2-sim            # just one
+make publish-precheck                      # dist, then install-and-import each wheel
+make publish CONFIRM=1                     # upload to PyPI
 ```
 
-A name can only be used once on PyPI, so check `twine check` passes and the
-TestPyPI upload installs before claiming the real name.
+`dist` removes stale `dist/` and `*.egg-info` first — artifacts from an earlier
+build, or from an earlier package name, would otherwise be uploaded too. The
+targets need `build` and `twine`, plus `uv` for the precheck, and discover
+plugins by wildcard, so a new directory with a `pyproject.toml` is picked up
+with no Makefile change.
+
+`build` has to be *importable* by the `python3` that runs `python3 -m build`,
+not merely on `PATH`, so a venv is the portable way to get these:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install build twine
+```
+
+pipx will not do for `build` — it isolates the module and exposes only the
+`pyproject-build` entry point. Nor will `pip install --user` on a stock Debian
+or Ubuntu, whose `python3` is externally managed and refuses it.
+
+`publish-precheck` installs each freshly built wheel into a throwaway `uv` venv
+and imports its top-level packages. A wheel can build and pass `twine check`
+and still be unimportable — a wrong `packages =`, a module left out of the
+distribution — and that is only discoverable from an installed copy. It imports
+the top level only: the adapter module needs LMCache, which `make test-plugins`
+covers inside the image.
+
+`publish` runs `publish-precheck` first and then demands `CONFIRM=1`, because
+the upload cannot be taken back: a version on PyPI can be yanked but never
+replaced, and a project name is claimed once.
+
+CI covers all of this on every PR. The `lmcache-fleet - Package Check` lane
+builds and prechecks the distributions, asserts `publish` refuses without
+`CONFIRM=1`, and then runs the real upload against a stub index on loopback —
+so a malformed `twine upload` surfaces there rather than on the one attempt
+that counts.

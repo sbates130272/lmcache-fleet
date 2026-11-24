@@ -17,7 +17,19 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help image gen up stim run dash targets report check shot test-plugins down clean logs env-vars
+.PHONY: help image gen up stim run dash targets report check shot test-plugins dist publish-precheck publish down clean logs env-vars
+
+# One publishable distribution per plugins/<dir>/pyproject.toml, each built and
+# uploaded on its own. Discovered by wildcard rather than listed, so a new
+# plugin directory needs no Makefile change. PLUGIN=<dir> narrows to one.
+PLUGIN_DIRS := $(patsubst %/,%,$(dir $(wildcard plugins/$(if $(PLUGIN),$(PLUGIN),*)/pyproject.toml)))
+
+# `build` has to be importable by the python3 that runs `python3 -m build`, so
+# pipx is no help: it isolates the module in its own venv and exposes only the
+# pyproject-build entry point. `pip install --user` is no help either on a
+# stock Debian or Ubuntu, whose python3 is externally managed and refuses it.
+# A venv is the one answer that works everywhere.
+PKG_TOOLS_HINT := get them with  python3 -m venv .venv && . .venv/bin/activate && pip install build twine
 
 ##@ Fleet Lifecycle
 
@@ -52,6 +64,54 @@ test-plugins: image ## Run the plugin test suites inside the lmcache image
 		--entrypoint "" --user "$(shell id -u):$(shell id -g)" \
 		$(LMCACHE_IMAGE) \
 		sh -c '/opt/venv/bin/python -m pytest /plugins/*/tests -q -p no:cacheprovider'
+
+##@ Packaging
+
+dist: ## Build and validate sdist+wheel for every plugin (PLUGIN=<dir> for one)
+	@test -n "$(PLUGIN_DIRS)" || { echo "no plugin matching '$(PLUGIN)' under plugins/"; exit 1; }
+	@python3 -c 'import build' 2>/dev/null \
+		|| { echo "missing build; $(PKG_TOOLS_HINT)"; exit 1; }
+	@command -v twine >/dev/null \
+		|| { echo "missing twine; $(PKG_TOOLS_HINT)"; exit 1; }
+	@for d in $(PLUGIN_DIRS); do \
+		echo "==> $$d"; \
+		rm -rf "$$d/dist" "$$d"/*.egg-info; \
+		( cd "$$d" && python3 -m build ) || exit 1; \
+		twine check "$$d"/dist/* || exit 1; \
+	done
+
+# A wheel that builds and passes `twine check` can still be unimportable once
+# installed — a wrong `packages =`, a module left out of the distribution. Only
+# the top-level packages are imported here: the adapter module itself needs
+# LMCache, which `make test-plugins` covers inside the image.
+publish-precheck: dist ## Install each built wheel into a throwaway uv venv and import it
+	@command -v uv >/dev/null || { echo "missing uv; see https://docs.astral.sh/uv/"; exit 1; }
+	@root=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$root"' EXIT; \
+	trap 'exit 130' INT; trap 'exit 143' TERM HUP; \
+	for d in $(PLUGIN_DIRS); do \
+		for whl in "$$d"/dist/*.whl; do \
+			echo "==> $$whl"; \
+			mods=$$(unzip -p "$$whl" '*/top_level.txt' 2>/dev/null | tr -d '\r'); \
+			test -n "$$mods" || { \
+				echo "    no top_level.txt in $$whl: nothing to import, refusing to pass" >&2; \
+				exit 1; }; \
+			venv="$$root/$$(basename "$$whl" .whl)"; \
+			uv venv -q "$$venv" || exit 1; \
+			VIRTUAL_ENV="$$venv" uv pip install -q "$$whl" || exit 1; \
+			for m in $$mods; do \
+				"$$venv"/bin/python -c "import $$m" || exit 1; \
+				echo "    import $$m: ok"; \
+			done; \
+			rm -rf "$$venv"; \
+		done; \
+	done
+
+publish: publish-precheck ## Upload to PyPI — irreversible, needs CONFIRM=1
+	@test "$(CONFIRM)" = "1" || { \
+		echo "refusing: a version uploaded to PyPI can never be replaced, only yanked."; \
+		echo "prechecks above passed; to upload: make publish CONFIRM=1"; exit 1; }
+	@for d in $(PLUGIN_DIRS); do twine upload "$$d"/dist/*; done
 
 ##@ Inspection
 
@@ -95,12 +155,17 @@ clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 env-vars: ## List every environment variable, grouped, with its default
 	@python3 scripts/gen_compose.py --env-vars
 
+# Colour only on a terminal and only without NO_COLOR, matching --env-vars, so
+# piping or redirecting either listing gives plain text. The %-17s padding sits
+# inside the colour so the escapes never count toward the column width.
 help: ## Show this help
-	@awk 'BEGIN { \
+	@tty=0; [ -t 1 ] && [ -z "$$NO_COLOR" ] && tty=1; \
+	awk -v c=$$tty 'BEGIN { \
 		FS = ":.*##"; \
-		printf "\n\033[1mLMCache Fleet Demo\033[0m\n\n"; \
-		printf "  \033[2musage:\033[0m make \033[36m<target>\033[0m \033[2m[NUM=<servers>] [SEQ=<sequences>]\033[0m\n"; \
+		if (c) { B = "\033[1m"; C = "\033[36m"; D = "\033[2m"; O = "\033[0m" } \
+		printf "\n%sLMCache Fleet Demo%s\n\n", B, O; \
+		printf "  %susage:%s make %s<target>%s %s[NUM=<servers>] [SEQ=<sequences>]%s\n", D, O, C, O, D, O; \
 	} \
-	/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } \
-	/^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2 } \
-	END { printf "\n  \033[2mcurrent: NUM=$(NUM) SEQ=$(SEQ)\033[0m\n\n" }' $(MAKEFILE_LIST)
+	/^##@/ { printf "\n%s%s%s\n", B, substr($$0, 5), O } \
+	/^[a-zA-Z0-9_-]+:.*##/ { printf "  %s%-17s%s %s\n", C, $$1, O, $$2 } \
+	END { printf "\n  %scurrent: NUM=$(NUM) SEQ=$(SEQ)%s\n\n", D, O }' $(MAKEFILE_LIST)

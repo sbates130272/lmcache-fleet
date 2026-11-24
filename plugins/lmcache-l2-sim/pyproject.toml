@@ -26,9 +26,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sbates130272/lmcache-fleet-demo"
-Source = "https://github.com/sbates130272/lmcache-fleet-demo/tree/main/plugins/lmcache-l2-sim"
-Issues = "https://github.com/sbates130272/lmcache-fleet-demo/issues"
+Homepage = "https://github.com/sbates130272/lmcache-fleet"
+Source = "https://github.com/sbates130272/lmcache-fleet/tree/main/plugins/lmcache-l2-sim"
+Issues = "https://github.com/sbates130272/lmcache-fleet/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
