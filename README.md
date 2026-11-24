@@ -24,6 +24,42 @@ docker compose --profile stim up -d $(seq 1 4 | sed 's/^/stim-/')   # make store
 ./report.sh 4                   # directory: per-instance L1/L2 placements
 ```
 
+## Dummy L2: many blocks, almost no disk
+
+`L2_DEDUP=1` wraps the `fs` L2 adapter with [plugins/lmcache_dedup](plugins/),
+an out-of-tree adapter loaded through LMCache's built-in `plugin` type (no image
+rebuild). The server stores exactly as before and still believes every key is
+its own file, but once each write completes the file is replaced by a hardlink
+to one shared canonical file of that size.
+
+```bash
+L2_DEDUP=1 make up NUM=2 SEQ=40
+L2_DEDUP=1 make stim NUM=2 SEQ=40
+```
+
+Same run, stock vs dedup (2 servers, `L1_GB=0.05 SEQ=40`):
+
+| | stock `fs` | `L2_DEDUP=1` |
+| --- | --- | --- |
+| `.data` filenames per server | 80 | 80 |
+| disk used per server (`du`) | 81 MB | 1.1 MB |
+| coordinator keys tracked | 116 | 116 |
+| coordinator L2 placements | 160 | 160 |
+
+`ls -l` still shows every file at its full size; only `du` tells them apart.
+
+L2 latency can be modelled too, with or without dedup:
+`L2_READ_DELAY_MS`, `L2_WRITE_DELAY_MS`, their `_PER_MB` variants, and
+`L2_DELAY_JITTER`. `L2_LINK_MODE=symlink` makes the sharing visible in `ls -l`.
+
+**What is fake.** An L2 read returns the shared block, not the KV stored under
+that key. The store path, key directory, eviction, and L2 traffic are all real;
+L2 *contents* are not. `gen_compose.py` therefore drops the stimulators' `--url`
+checksum verification whenever dedup is on. Do not point a real model at it.
+
+See [plugins/README.md](plugins/README.md) for the full parameter list, using the
+adapter outside this demo, and the upstreaming note.
+
 ## Monitoring
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the
@@ -83,6 +119,11 @@ plus real `.data` files under `data/l2-server-*/`.
 | TOTAL | NUM_SERVERS×SEQ×blocks/seq | total unique blocks the fleet may address |
 | SEED | 0 | seeds where each stimulator's window lands; same seed → same layout |
 | RANGE_LO / RANGE_HI | 0 / TOTAL | optional block sub-range windows must stay inside |
+| L2_DEDUP | 0 | 1 = share one canonical file per block size (fake L2 contents) |
+| L2_LINK_MODE | hardlink | `hardlink` or `symlink` for deduped files |
+| L2_READ_DELAY_MS / L2_WRITE_DELAY_MS | 0 | fixed delay per L2 load / store |
+| L2_READ_DELAY_MS_PER_MB / L2_WRITE_DELAY_MS_PER_MB | 0 | L2 delay per MiB transferred |
+| L2_DELAY_JITTER | 0 | fractional jitter on L2 delays, 0 to 1 |
 | RUN_UID / RUN_GID | your uid/gid | uid:gid every container runs as |
 | COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
 | GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind |

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lmcache-dedup-l2"
+version = "0.1.0"
+description = "Dedup + latency L2 adapter for LMCache MP: model a large, slow L2 tier without the disk"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+# LMCache is deliberately not a declared dependency: the adapter is installed
+# into an environment that already has the LMCache build it will run inside,
+# and pulling a second copy from PyPI would replace it.
+dependencies = []
+keywords = ["lmcache", "kv-cache", "llm", "storage", "testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+]
+
+[tool.setuptools]
+packages = ["lmcache_dedup"]

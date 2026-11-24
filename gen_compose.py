@@ -15,6 +15,7 @@ Then:
   docker compose --profile stim up stim-1 ... stim-N
   ./report.sh                           # directory summary (L1/L2 per server)
 """
+import json
 import os
 import random
 import sys
@@ -105,6 +106,47 @@ for _i in range(1, NUM_SERVERS + 1):
     _start = _rng.randrange(_lo_seq, _hi_seq - SEQS + 1)
     windows.append((_start, _start + SEQS))
 
+# ---------------- L2 backend -------------------------------------------------
+# Stock: the fs adapter, real bytes on disk. With L2_DEDUP=1 (or any L2 delay)
+# the fs adapter is wrapped by plugins/lmcache_dedup, loaded through LMCache's
+# built-in `plugin` adapter type: every key keeps a unique filename, but all
+# files of one size share a single canonical file, so large block counts cost
+# almost no disk. L2 reads then return that canonical block rather than the
+# key's own KV, so the bench's checksum verification is switched off with it.
+L2_DEDUP = os.environ.get("L2_DEDUP", "0") not in ("0", "", "false", "no")
+L2_LINK_MODE = os.environ.get("L2_LINK_MODE", "hardlink")
+L2_DELAYS = {
+    "write_delay_ms": float(os.environ.get("L2_WRITE_DELAY_MS", "0")),
+    "write_delay_ms_per_mb": float(os.environ.get("L2_WRITE_DELAY_MS_PER_MB", "0")),
+    "read_delay_ms": float(os.environ.get("L2_READ_DELAY_MS", "0")),
+    "read_delay_ms_per_mb": float(os.environ.get("L2_READ_DELAY_MS_PER_MB", "0")),
+    "delay_jitter": float(os.environ.get("L2_DELAY_JITTER", "0")),
+}
+L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
+_fs_spec = {"type": "fs", "base_path": "/data/l2"}
+if L2_PLUGIN:
+    L2_ADAPTER = {
+        "type": "plugin",
+        "module_path": "lmcache_dedup.dedup_l2_adapter",
+        "class_name": "DedupL2Adapter",
+        "adapter_params": {
+            "inner": _fs_spec,
+            "dedup": L2_DEDUP,
+            "link_mode": L2_LINK_MODE,
+            "seed": int(SEED) if SEED.lstrip("-").isdigit() else 0,
+            **{k: v for k, v in L2_DELAYS.items() if v},
+        },
+    }
+else:
+    L2_ADAPTER = _fs_spec
+L2_ADAPTER_JSON = json.dumps(L2_ADAPTER, separators=(",", ":"))
+L2_ENV = "      PYTHONPATH: /opt/lmcache-plugins\n" if L2_PLUGIN else ""
+L2_PLUGIN_MOUNT = ("      - ./plugins:/opt/lmcache-plugins:ro           # out-of-tree L2 adapter\n"
+                   if L2_PLUGIN else "")
+# Checksum verification compares retrieved KV against what was stored, which
+# dedup deliberately breaks for anything served from L2.
+STIM_URL = '""' if L2_DEDUP else None
+
 # Monitoring sidecars. Grafana is the only service published beyond loopback;
 # it takes a host port RANGE so compose picks a free one rather than failing on
 # a busy node. `make dash` prints whichever port it landed on.
@@ -126,14 +168,14 @@ for i in range(1, NUM_SERVERS + 1):
     servers.append(f"""  {name}:
     image: {IMAGE}
     hostname: {name}
-{RUN_AS}    ipc: shareable
+{RUN_AS}{L2_ENV}    ipc: shareable
     shm_size: {SHM_SIZE}
     networks: [fleet]
     ports:
       - "127.0.0.1:{HTTP_BASE + i - 1}:8080"   # HTTP API on host for /status, /cache/objects
     volumes:
       - ./data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
-    healthcheck:
+{L2_PLUGIN_MOUNT}    healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck',timeout=2)"]
       interval: 5s
@@ -153,7 +195,7 @@ for i in range(1, NUM_SERVERS + 1):
       --coordinator-url http://coordinator:{COORD_PORT}
       --coordinator-advertise-ip {name}
       --coordinator-event-reporting
-      --l2-adapter '{{"type":"fs","base_path":"/data/l2"}}'
+      --l2-adapter '{L2_ADAPTER_JSON}'
 """)
 
     stimulators.append(f"""  stim-{i}:
@@ -168,7 +210,7 @@ for i in range(1, NUM_SERVERS + 1):
     command: >
       /opt/venv/bin/lmcache bench server
       --rpc-url tcp://{name}:5555
-      --url http://{name}:8080
+      --url {STIM_URL or f"http://{name}:8080"}
       --mode cpu --transfer-mode lmcache_driven
       --kvcache-shape-spec "{SHAPE_SPEC}"
       --num-tokens {NUM_TOKENS}
@@ -305,3 +347,10 @@ for _i, (_s, _e) in enumerate(windows, 1):
           f"blocks [{_s * BLOCKS_PER_SEQ},{_e * BLOCKS_PER_SEQ})")
 print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
       f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")
+if L2_PLUGIN:
+    _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
+    print(f"L2: fs wrapped by lmcache_dedup "
+          f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
+          f"{' — L2 contents are fake, bench checksum verification off' if L2_DEDUP else ''}")
+else:
+    print("L2: fs (real bytes on disk)")
