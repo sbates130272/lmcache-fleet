@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fleet report: coordinator directory (L1/L2 placements per instance) + live L1 usage.
+# Fleet report: coordinator directory (L1/L2 placements per instance), live L1
+# usage, and L2 file counts with logical size vs space actually used on disk.
 set -euo pipefail
 COORD="${COORD:-http://127.0.0.1:9300}"
 N="${1:-3}"
@@ -53,4 +54,25 @@ blob = json.dumps(d)
 found = re.findall(r'"((?:l1|used|capacity|resident)[^"]*)"\s*:\s*([0-9.]+)', blob, re.I)
 print(f"  server-{i}: " + (", ".join(f"{k}={v}" for k, v in found[:8]) if found else "ok (see /status)"))
 PY
+done
+
+echo
+echo "== L2 on disk (./data/l2-server-N) =="
+here="$(cd "$(dirname "$0")/.." && pwd)"   # repo root, one level up from scripts/
+for i in $(seq 1 "$N"); do
+  d="$here/data/l2-server-$i"
+  [ -d "$d" ] || { echo "  server-$i: no $d"; continue; }
+  # Logical = what the server believes it stored: every .data name at its full
+  # size, following links. On disk = blocks actually allocated, shared content
+  # counted once.
+  find -L "$d" -maxdepth 1 -name '*.data' -printf '%s\n' 2>/dev/null \
+    | awk -v s="$i" -v disk="$(du -sh "$d" | cut -f1)" \
+          -v canon="$(find "$d/.dedup" -name '*.canon' 2>/dev/null | wc -l)" '
+        { n++; b += $1 }
+        END {
+          split("B KiB MiB GiB TiB", u, " "); k = 1
+          while (b >= 1024 && k < 5) { b /= 1024; k++ }
+          printf "  server-%s: %d files, %.1f %s logical, %s on disk%s\n", s, n, b, u[k], disk,
+                 (canon > 0 ? sprintf(" (dedup: %d canonical)", canon) : "")
+        }'
 done

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lmcache-l2-sim"
+version = "0.1.0"
+description = "L2 tier simulator for LMCache MP: model a large, slow L2 backend without the disk or the wait"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Stephen Bates" }]
+# LMCache is deliberately not a declared dependency: the adapter is installed
+# into an environment that already has the LMCache build it will run inside,
+# and pulling a second copy from PyPI would replace it.
+dependencies = []
+keywords = ["lmcache", "kv-cache", "llm", "storage", "l2-adapter", "simulation", "testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Homepage = "https://github.com/sbates130272/lmcache-fleet-demo"
+Source = "https://github.com/sbates130272/lmcache-fleet-demo/tree/main/plugins/lmcache-l2-sim"
+Issues = "https://github.com/sbates130272/lmcache-fleet-demo/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["lmcache_l2_sim"]
