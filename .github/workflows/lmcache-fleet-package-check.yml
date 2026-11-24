@@ -1,0 +1,88 @@
+name: lmcache-fleet - Package Check
+
+# PR only, like the other lint lanes: every commit reaches main through a PR
+# merge, so a post-merge run would re-check a tree this already passed on.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package-check:
+    name: lmcache-fleet - Package Check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install build and twine
+        run: pipx install build && pipx install twine
+
+      # Builds an sdist and wheel for every plugins/<dir>/pyproject.toml and
+      # runs twine check over both.
+      - name: Build the distributions
+        run: make dist
+
+      # Installs each wheel into a throwaway venv and imports its top-level
+      # packages -- the part twine check cannot tell you.
+      - name: Install and import each wheel
+        run: make publish-precheck
+
+      # The guard is the whole safety property of `publish`: a version uploaded
+      # to PyPI can never be replaced. If this ever stops refusing, a stray
+      # `make publish` burns a version number for real.
+      - name: Refuse to publish without CONFIRM
+        run: |
+          if make publish > out.txt 2>&1; then
+            echo "make publish succeeded without CONFIRM=1" >&2
+            cat out.txt >&2
+            exit 1
+          fi
+          grep -q "refusing" out.txt || {
+            echo "publish failed, but not on the CONFIRM guard:" >&2
+            cat out.txt >&2
+            exit 1
+          }
+          echo "gate held:"; grep refusing out.txt
+
+      # Exercises the real upload path against a throwaway local index rather
+      # than PyPI, so a malformed `twine upload` invocation is caught here
+      # instead of on the one attempt that cannot be taken back. Nothing leaves
+      # the runner: the stub listens on loopback and discards what it receives.
+      - name: Upload against a local stub index
+        env:
+          TWINE_REPOSITORY_URL: http://127.0.0.1:8099/
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: not-a-real-token
+        run: |
+          cat > stub_index.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  n = int(self.headers.get("Content-Length", 0))
+                  self.rfile.read(n)
+                  print(f"stub index: accepted {n} bytes", flush=True)
+                  self.send_response(200)
+                  self.end_headers()
+
+              def log_message(self, *a):
+                  pass
+
+          HTTPServer(("127.0.0.1", 8099), Handler).serve_forever()
+          PY
+          python3 stub_index.py & stub=$!
+          trap 'kill $stub 2>/dev/null' EXIT
+          for _ in $(seq 1 50); do
+            curl -sf -o /dev/null -X POST http://127.0.0.1:8099/ && break
+            sleep 0.2
+          done
+          make publish CONFIRM=1

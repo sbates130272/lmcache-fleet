@@ -79,18 +79,24 @@ dist: ## Build and validate sdist+wheel for every plugin (PLUGIN=<dir> for one)
 # LMCache, which `make test-plugins` covers inside the image.
 publish-precheck: dist ## Install each built wheel into a throwaway uv venv and import it
 	@command -v uv >/dev/null || { echo "missing uv; see https://docs.astral.sh/uv/"; exit 1; }
-	@for d in $(PLUGIN_DIRS); do \
+	@root=$$(mktemp -d) || exit 1; \
+	trap 'rm -rf "$$root"' EXIT; \
+	trap 'exit 130' INT; trap 'exit 143' TERM HUP; \
+	for d in $(PLUGIN_DIRS); do \
 		for whl in "$$d"/dist/*.whl; do \
 			echo "==> $$whl"; \
-			venv=$$(mktemp -d) || exit 1; \
-			trap 'rm -rf "$$venv"' EXIT; \
+			mods=$$(unzip -p "$$whl" '*/top_level.txt' 2>/dev/null | tr -d '\r'); \
+			test -n "$$mods" || { \
+				echo "    no top_level.txt in $$whl: nothing to import, refusing to pass" >&2; \
+				exit 1; }; \
+			venv="$$root/$$(basename "$$whl" .whl)"; \
 			uv venv -q "$$venv" || exit 1; \
 			VIRTUAL_ENV="$$venv" uv pip install -q "$$whl" || exit 1; \
-			for m in $$(unzip -p "$$whl" '*/top_level.txt' | tr -d '\r'); do \
+			for m in $$mods; do \
 				"$$venv"/bin/python -c "import $$m" || exit 1; \
 				echo "    import $$m: ok"; \
 			done; \
-			rm -rf "$$venv"; trap - EXIT; \
+			rm -rf "$$venv"; \
 		done; \
 	done
 

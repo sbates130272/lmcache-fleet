@@ -8,6 +8,7 @@
 [![Docker Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-docker-lint.yml?label=docker-lint&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-docker-lint.yml)
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
+[![Package Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-package-check.yml?label=package-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-package-check.yml)
 
 <!-- Not a workflow status: it links to the dashboard the smoke-test lane
      screenshotted on its last run on main, republished to gh-pages because
@@ -208,13 +209,21 @@ fleet where one server absorbed every store still shows healthy totals.
 
 ## Continuous Integration
 
-Four lanes, all on GitHub-hosted `ubuntu-24.04`. Three are cheap PR gates —
-codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, and hadolint
+Five lanes, all on GitHub-hosted `ubuntu-24.04`. Four are cheap PR gates —
+codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, hadolint
 plus `docker compose config` on the Dockerfile and the *generated* compose file
 (both the stock and `L2_DEDUP=1` variants, since dedup takes a different branch
-in the generator).
+in the generator), and the packaging lane below.
 
-The fourth, `lmcache-fleet - Smoke Test`, runs a real fleet on a GitHub runner,
+`lmcache-fleet - Package Check` runs `make dist` and `make publish-precheck`,
+then exercises both halves of the publish path without touching PyPI: it
+asserts `make publish` refuses without `CONFIRM=1`, and then runs
+`make publish CONFIRM=1` against a stub index on loopback that accepts and
+discards what it receives. A version uploaded to PyPI can never be replaced,
+so a malformed `twine upload` is worth catching anywhere other than on the one
+attempt that counts.
+
+The fifth, `lmcache-fleet - Smoke Test`, runs a real fleet on a GitHub runner,
 in one of two shapes:
 
 ```bash

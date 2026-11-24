@@ -69,3 +69,9 @@ covers inside the image.
 `publish` runs `publish-precheck` first and then demands `CONFIRM=1`, because
 the upload cannot be taken back: a version on PyPI can be yanked but never
 replaced, and a project name is claimed once.
+
+CI covers all of this on every PR. The `lmcache-fleet - Package Check` lane
+builds and prechecks the distributions, asserts `publish` refuses without
+`CONFIRM=1`, and then runs the real upload against a stub index on loopback —
+so a malformed `twine upload` surfaces there rather than on the one attempt
+that counts.
