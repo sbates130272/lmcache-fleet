@@ -22,6 +22,9 @@ Then:
 import json
 import os
 import random
+import re
+import socket
+import subprocess
 import sys
 
 # ---------------- tunables (env-overridable) --------------------------------
@@ -173,6 +176,64 @@ GRAFANA_IMAGE = os.environ.get("GRAFANA_IMAGE", "grafana/grafana:latest")
 SCRAPE_INTERVAL = os.environ.get("SCRAPE_INTERVAL", "5s")
 PROM_RETENTION = os.environ.get("PROM_RETENTION", "6h")
 GRAFANA_PORTS = os.environ.get("GRAFANA_PORTS", "3000-3010")
+# Set GRAFANA_PORT to pin one exactly; otherwise a port is chosen from the
+# range below and written into the compose file as a fixed mapping.
+GRAFANA_PORT = os.environ.get("GRAFANA_PORT")
+
+
+def _port_free(port):
+    """Whether we can bind 0.0.0.0:port, the way docker publishes it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
+def _running_grafana_port():
+    """Host port this project's grafana already publishes, if it is running.
+
+    Preferring it is what makes the port sticky: without this the picker would
+    see the port as busy (our own container holds it) and move to the next one,
+    recreating grafana somewhere else on every regeneration.
+    """
+    try:
+        out = subprocess.run(
+            ["docker", "ps",
+             "--filter", f"label=com.docker.compose.project={PROJECT}",
+             "--filter", "label=com.docker.compose.service=grafana",
+             "--format", "{{.Ports}}"],
+            capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r":(\d+)->3000/tcp", out)
+    return int(match.group(1)) if match else None
+
+
+def _pick_grafana_port():
+    """Return a stable host port, or None to let docker choose from the range.
+
+    Handing compose a range makes docker pick, and its allocator walks forward
+    past recently-used ports rather than reusing the lowest free one -- so the
+    port drifts on every restart. Choosing here instead keeps it put.
+    """
+    if GRAFANA_PORT:
+        return int(GRAFANA_PORT)
+    low, _, high = GRAFANA_PORTS.partition("-")
+    low, high = int(low), int(high or low)
+    current = _running_grafana_port()
+    if current is not None and low <= current <= high:
+        return current
+    for candidate in range(low, high + 1):
+        if _port_free(candidate):
+            return candidate
+    return None
+
+
+_grafana_port = _pick_grafana_port()
+GRAFANA_PORT_SPEC = (f"{_grafana_port}:3000" if _grafana_port
+                     else f"{GRAFANA_PORTS}:3000")
 # Directory exporter: polls the coordinator's key directory and publishes
 # per-server inventory, placement age, replication and churn.
 EXPORTER_IMAGE = os.environ.get("EXPORTER_IMAGE", "python:3-alpine")
@@ -307,7 +368,7 @@ services:
     networks: [fleet]
     depends_on: [prometheus]
     ports:
-      - "{GRAFANA_PORTS}:3000"   # host range → compose picks a free port; `make dash` prints it
+      - "{GRAFANA_PORT_SPEC}"   # picked at generation time and kept; `make dash` prints it
     volumes:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro

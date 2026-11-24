@@ -97,9 +97,13 @@ adapter outside this demo, and the upstreaming note.
 ## Monitoring the Fleet
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the
-only service published past loopback; it binds a host *range* (`3000-3010` by
-default) so it lands on a free port instead of failing on a busy node, and
-`make dash` prints whichever one it got. There is no login — anonymous access is
+only service published past loopback. gen_compose picks the lowest free port in
+`GRAFANA_PORTS` (default `3000-3010`) and writes it as a fixed mapping, so it
+lands somewhere free on a busy node *and* stays put across restarts — handing
+compose the range instead lets docker's allocator walk forward past
+recently-used ports, so the URL drifts every time. If our grafana is already
+running, its current port wins, so regenerating never moves it. `GRAFANA_PORT`
+pins one exactly, and `make dash` always prints the live one. There is no login — anonymous access is
 on and the fleet dashboard is the home page.
 
 Prometheus scrapes `/metrics` on the coordinator (`:9300`) and on every MP server
@@ -194,7 +198,8 @@ plus real `.data` files under `data/l2-server-*/`.
 | L2_DELAY_JITTER | 0 | fractional jitter on L2 delays, 0 to 1 |
 | RUN_UID / RUN_GID | your uid/gid | uid:gid every container runs as |
 | COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
-| GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind |
+| GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind; the lowest free one is picked and then kept |
+| GRAFANA_PORT | (unset) | pin Grafana to exactly this host port |
 | SCRAPE_INTERVAL | 5s | Prometheus scrape interval |
 | DIRECTORY_POLL | 15 | seconds between directory exporter polls |
 | AGE_BOUNDS | 5m,30m,1h,2h,4h,8h | age bucket bounds for the exporter (set on the service) |
