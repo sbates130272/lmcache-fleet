@@ -86,3 +86,22 @@ builds and prechecks the distributions, asserts `publish` refuses without
 `CONFIRM=1`, and then runs the real upload against a stub index on loopback —
 so a malformed `twine upload` surfaces there rather than on the one attempt
 that counts.
+
+## After publishing
+
+```bash
+make test-released                     # latest on PyPI
+make test-released VERSION=0.1.0       # a specific release
+```
+
+This installs each distribution from PyPI into the lmcache image and runs the
+repo's own test suite against *that* copy. `make test-plugins` tests the
+working tree, which cannot tell you whether the published artifact is whole —
+a module left out of the wheel, or a release cut from different source. Only
+`tests/` is mounted into the container, so the working-tree package is not
+present to shadow the installed one.
+
+The `lmcache-fleet - Released Check` lane runs it weekly and on every push to
+main that touches `plugins/`. The schedule is the point: this is the one lane
+whose result can change with no commit behind it, when a release is yanked or
+something underneath it moves.

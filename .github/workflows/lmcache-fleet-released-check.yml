@@ -1,0 +1,78 @@
+name: lmcache-fleet - Released Check
+
+# Tests the plugin as published rather than as checked out, which makes it the
+# one lane whose result can change without a commit: a yanked or re-resolved
+# release, or a dependency that moved under it, turns this red on a tree that
+# never changed. Hence the schedule. It also runs on main when the plugin or
+# its tests change, so a source change that invalidates the published release
+# is visible immediately rather than up to a week later.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (blank = whatever PyPI calls latest)'
+        required: false
+        type: string
+  schedule:
+    # Monday 06:23 UTC. Off the hour on purpose: every scheduled workflow
+    # asking for :00 lands on GitHub's queue at the same instant.
+    - cron: '23 6 * * 1'
+  push:
+    branches:
+      - main
+    paths:
+      - 'plugins/**'
+      - '.github/workflows/lmcache-fleet-released-check.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LMCACHE_IMAGE: lmcache-fleet-demo/lmcache:0.5.8-cpu
+
+jobs:
+  released-check:
+    name: lmcache-fleet - Released Check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Read the cache the smoke-test lane writes rather than writing one of
+      # our own: this lane runs weekly and would only ever push a stale entry.
+      - name: Build the CPU-only image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: ${{ env.LMCACHE_IMAGE }}
+          load: true
+          cache-from: type=gha
+
+      # Installs each plugin from PyPI into the image and runs the repo's test
+      # suite against that copy. Only tests/ is mounted, so the working-tree
+      # package cannot shadow the installed one.
+      - name: Test the published release
+        run: make test-released VERSION=${{ inputs.version }}
+
+      # Not a gate: a difference is normal between bumping the version in
+      # source and publishing it. Recorded so the run says which release was
+      # actually exercised, since "latest" moves.
+      - name: Report published versus source version
+        if: always()
+        run: |
+          { echo "| plugin | on PyPI | in source |"; echo "| --- | --- | --- |"; } >> "$GITHUB_STEP_SUMMARY"
+          for d in plugins/*/; do
+            test -f "$d/pyproject.toml" || continue
+            name=$(basename "$d")
+            src=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$d/pyproject.toml" | head -1)
+            pypi=$(curl -sf "https://pypi.org/pypi/$name/json" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
+              || echo "not published")
+            echo "| \`$name\` | $pypi | $src |" >> "$GITHUB_STEP_SUMMARY"
+          done
