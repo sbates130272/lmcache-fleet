@@ -13,7 +13,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim run dash targets report test-plugins down clean logs
+.PHONY: help gen up stim run dash targets report test-plugins down clean logs env-vars
 
 ##@ Fleet Lifecycle
 
@@ -73,6 +73,9 @@ clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana ./data/exporter
 
 ##@ Help
+
+env-vars: ## List every environment variable, grouped, with its default
+	@python3 scripts/gen_compose.py --env-vars
 
 help: ## Show this help
 	@awk 'BEGIN { \

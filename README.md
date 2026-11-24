@@ -184,33 +184,23 @@ plus real `.data` files under `data/l2-server-*/`.
 
 ## Tunables (Environment Variables)
 
-| var | default | meaning |
-|---|---|---|
-| NUM_SERVERS | 3 | fleet size |
-| NUM_COORD | 1 | coordinators; must be 1 (v0.5.8 has no coordinator clustering) |
-| TOTAL | NUM_SERVERS×SEQ×blocks/seq | total unique blocks the fleet may address |
-| SEED | 0 | seeds where each stimulator's window lands; same seed → same layout |
-| RANGE_LO / RANGE_HI | 0 / TOTAL | optional block sub-range windows must stay inside |
-| L2_DEDUP | 0 | 1 = share one canonical file per block size (fake L2 contents) |
-| L2_LINK_MODE | hardlink | `hardlink` or `symlink` for deduped files |
-| L2_READ_DELAY_MS / L2_WRITE_DELAY_MS | 0 | fixed delay per L2 load / store |
-| L2_READ_DELAY_MS_PER_MB / L2_WRITE_DELAY_MS_PER_MB | 0 | L2 delay per MiB transferred |
-| L2_DELAY_JITTER | 0 | fractional jitter on L2 delays, 0 to 1 |
-| RUN_UID / RUN_GID | your uid/gid | uid:gid every container runs as |
-| COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
-| GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind; the lowest free one is picked and then kept |
-| GRAFANA_PORT | (unset) | pin Grafana to exactly this host port |
-| SCRAPE_INTERVAL | 5s | Prometheus scrape interval |
-| DIRECTORY_POLL | 15 | seconds between directory exporter polls |
-| AGE_BOUNDS | 5m,30m,1h,2h,4h,8h | age bucket bounds for the exporter (set on the service) |
-| PROM_RETENTION | 6h | how long metric history is kept |
-| SEQ | 6 | distinct synthetic sequences per stimulator |
-| NUM_TOKENS | 512 | tokens per store request (multiple of CHUNK_SIZE) |
-| CHUNK_SIZE | 256 | chunk size (must match across servers/coordinator) |
-| L1_GB | 1 | per-server L1 DRAM tier size |
-| SHAPE_SPEC | (2,64,16,4,64):float16:4 | bench KV shape; bigger → faster L1 fill |
-| SHM_SIZE | 512m | /dev/shm per server + stimulator |
-| EVICT_WATERMARK | 0.8 | L1 fraction that triggers L2 spill |
+The demo reads around forty environment variables. Rather than keep a table
+here that drifts from the code, ask for the list:
+
+```bash
+make env-vars
+```
+
+It prints them grouped — Fleet, Workload, L2 simulation, Monitoring, Runtime
+and the exporter's own — each with the default read straight out of the source,
+so the listing cannot fall out of step. A variable the code reads but nobody
+has described shows up under "undocumented" rather than going unmentioned.
+
+`NUM` and `SEQ` are make variables; everything else is an environment variable:
+
+```bash
+L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000
+```
 
 To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
 

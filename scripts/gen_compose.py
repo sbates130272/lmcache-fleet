@@ -27,6 +27,141 @@ import socket
 import subprocess
 import sys
 
+# ---------------- `--env-vars` listing ---------------------------------------
+# Descriptions live here; DEFAULTS ARE NOT REPEATED. They are read back out of
+# the source below, so the listing cannot drift from what the code actually
+# does -- and any variable missing from this map still gets listed, under
+# "undocumented", rather than quietly going unmentioned.
+ENV_DOCS = {
+    "NUM_SERVERS": ("Fleet", "number of MP servers"),
+    "NUM_COORD": ("Fleet", "coordinators; must be 1 (v0.5.8 has no clustering)"),
+    "LMCACHE_IMAGE": ("Fleet", "image for coordinator, servers and stimulators"),
+    "CHUNK_SIZE": ("Fleet", "chunk size; must match across servers and coordinator"),
+    "L1_GB": ("Fleet", "per-server L1 DRAM tier size"),
+    "EVICT_WATERMARK": ("Fleet", "L1 fraction that triggers the L2 spill"),
+    "SHM_SIZE": ("Fleet", "/dev/shm per server and stimulator"),
+    "COORD_PORT": ("Fleet", "host port the coordinator is published on"),
+    "HTTP_BASE": ("Fleet", "first host port for the servers' HTTP APIs"),
+
+    "SEQ": ("Workload", "sequences each stimulator stores (its window width)"),
+    "NUM_TOKENS": ("Workload", "tokens per store request; multiple of CHUNK_SIZE"),
+    "SHAPE_SPEC": ("Workload", "bench KV shape; bigger fills L1 faster"),
+    "TOTAL": ("Workload", "total unique blocks the fleet may address"),
+    "SEED": ("Workload", "seeds where each stimulator's window lands"),
+    "RANGE_LO": ("Workload", "low bound of the block sub-range windows sit in"),
+    "RANGE_HI": ("Workload", "high bound of that sub-range"),
+
+    "L2_DEDUP": ("L2 simulation", "1 = one canonical file per block size (fake contents)"),
+    "L2_LINK_MODE": ("L2 simulation", "hardlink or symlink for collapsed files"),
+    "L2_WRITE_DELAY_MS": ("L2 simulation", "fixed delay added to each L2 store"),
+    "L2_READ_DELAY_MS": ("L2 simulation", "fixed delay added to each L2 load"),
+    "L2_WRITE_DELAY_MS_PER_MB": ("L2 simulation", "store delay per MiB written"),
+    "L2_READ_DELAY_MS_PER_MB": ("L2 simulation", "load delay per MiB read"),
+    "L2_DELAY_JITTER": ("L2 simulation", "fractional jitter on L2 delays, 0 to 1"),
+
+    "PROM_IMAGE": ("Monitoring", "Prometheus image"),
+    "GRAFANA_IMAGE": ("Monitoring", "Grafana image"),
+    "EXPORTER_IMAGE": ("Monitoring", "image the directory exporter runs in"),
+    "SCRAPE_INTERVAL": ("Monitoring", "Prometheus scrape interval"),
+    "PROM_RETENTION": ("Monitoring", "how long metric history is kept"),
+    "GRAFANA_PORTS": ("Monitoring", "host port range Grafana may bind"),
+    "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
+    "DIRECTORY_POLL": ("Monitoring", "seconds between directory exporter polls"),
+
+    "RUN_UID": ("Runtime", "uid every container runs as"),
+    "RUN_GID": ("Runtime", "gid every container runs as"),
+    "COMPOSE_PROJECT_NAME": ("Runtime", "scopes the network and container names"),
+    "LMCACHE_VERSION": ("Runtime", "version named in the NUM_COORD error only"),
+
+    # Read by the exporter itself, so they are set on that service rather than
+    # passed to gen_compose.
+    "COORDINATOR_URL": ("Exporter (set on the service)", "coordinator to poll"),
+    "POLL_INTERVAL": ("Exporter (set on the service)", "seconds between polls"),
+    "PAGE_SIZE": ("Exporter (set on the service)", "keys per directory page"),
+    "EXPORTER_PORT": ("Exporter (set on the service)", "port /metrics is served on"),
+    "MISSING_POLLS": ("Exporter (set on the service)", "absences before a placement counts as gone"),
+    "STATE_PATH": ("Exporter (set on the service)", "where first-seen times are checkpointed"),
+    "STATE_SAVE_INTERVAL": ("Exporter (set on the service)", "seconds between checkpoints"),
+    "AGE_BOUNDS": ("Exporter (set on the service)", "age bucket bounds, comma-separated durations"),
+}
+
+_SECTION_ORDER = ["Fleet", "Workload", "L2 simulation", "Monitoring", "Runtime",
+                  "Exporter (set on the service)", "undocumented"]
+
+# Defaults the source computes rather than spells out.
+COMPUTED_DEFAULTS = {
+    "NUM_SERVERS": "3 (or argv[1])",
+    "TOTAL": "NUM_SERVERS x SEQ x blocks",
+    "RANGE_HI": "TOTAL",
+    "RUN_UID": "your uid",
+    "RUN_GID": "your gid",
+    "AGE_BOUNDS": "5m,30m,1h,2h,4h,8h",
+}
+
+
+def _scan_env_defaults(path):
+    """Yield (name, default) for every os.environ.get in a source file.
+
+    Reads the call text directly instead of importing, so listing the
+    variables never runs the generator's side effects. Parentheses are
+    balanced by hand because some defaults contain calls of their own.
+    """
+    source = open(path).read()
+    needle = "os.environ" + ".get("   # split so this line is not itself a hit
+    start = 0
+    while (found := source.find(needle, start)) != -1:
+        cursor = found + len(needle)
+        depth, arg_start = 1, cursor
+        while cursor < len(source) and depth:
+            if source[cursor] == "(":
+                depth += 1
+            elif source[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        args = source[arg_start:cursor - 1]
+        start = cursor
+        name, _, default = args.partition(",")
+        name = name.strip().strip("\"'")
+        default = " ".join(default.split()).strip() or "(unset)"
+        if default.startswith(("'", '"')) and default.endswith(("'", '"')):
+            default = default[1:-1]
+        if name.isupper():
+            yield name, default
+
+
+def _print_env_vars():
+    """Print every environment variable the demo reads, grouped, with defaults."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sources = [os.path.join(here, "scripts", "gen_compose.py"),
+               os.path.join(here, "monitoring", "exporter", "directory_exporter.py")]
+    found = {}
+    for source in sources:
+        if os.path.exists(source):
+            for name, default in _scan_env_defaults(source):
+                found.setdefault(name, COMPUTED_DEFAULTS.get(name, default))
+
+    sections = {}
+    for name, default in found.items():
+        section, description = ENV_DOCS.get(name, ("undocumented", ""))
+        sections.setdefault(section, []).append((name, default, description))
+
+    print("\nLMCache Fleet environment variables\n")
+    print("  Pass them to make, e.g.  L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000")
+    print("  NUM and SEQ are make variables; everything below is an env var.")
+    for section in _SECTION_ORDER:
+        if section not in sections:
+            continue
+        print(f"\n{section}")
+        for name, default, description in sorted(sections[section]):
+            print(f"  {name:<26} {default:<26} {description}")
+    print()
+
+
+if "--env-vars" in sys.argv:
+    _print_env_vars()
+    raise SystemExit(0)
+
+
 # ---------------- tunables (env-overridable) --------------------------------
 NUM_SERVERS = int(os.environ.get("NUM_SERVERS", sys.argv[1] if len(sys.argv) > 1 else "3"))
 
