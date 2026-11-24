@@ -44,12 +44,11 @@ jobs:
       - name: Set up buildx
         uses: docker/setup-buildx-action@v3
 
-      # The published lmcache/standalone is ~14.8 GB of CUDA toolchain for a
-      # fleet that never touches a GPU; it would not pull inside this job's
-      # budget, let alone run. docker/Dockerfile builds the 1.67 GB CPU-only
-      # equivalent, and building it here means the Dockerfile is continuously
-      # tested rather than only when someone remembers to.
-      - name: Build the slim CPU-only image
+      # The fleet's image is built, never pulled, so this is also what gives
+      # the Dockerfile continuous test coverage rather than only testing it
+      # when someone remembers to. Built here with the action rather than via
+      # `make image` so the layer cache is shared across runs.
+      - name: Build the CPU-only image
         uses: docker/build-push-action@v6
         with:
           context: .

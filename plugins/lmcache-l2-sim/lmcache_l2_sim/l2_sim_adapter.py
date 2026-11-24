@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-L2 tier simulator: model a large, slow L2 backend without the disk or the wait.
+L2 tier simulator: model a large L2 backend without spending the disk.
 
 Wraps a real inner L2 adapter (``fs`` or ``fs_native``) and changes two things
 about it, both for capacity modelling and diagnostics, never for production:
@@ -14,7 +14,7 @@ about it, both for capacity modelling and diagnostics, never for production:
   structurally valid block for any key of that size. Its *contents* are wrong
   for every key but the first, which is the trade this adapter exists to make.
 - **Latency.** Store and load completions are withheld for a configurable
-  delay (fixed, per-MB, with optional seeded jitter) to model a slower medium.
+  delay (fixed, per-MB, with optional seeded jitter) to model another medium.
   Nothing blocks: the adapter owns its event fds and signals them when a held
   completion comes due.
 

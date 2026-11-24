@@ -6,7 +6,7 @@ its own.
 
 | directory | distribution | what it does |
 | --- | --- | --- |
-| [lmcache-l2-sim](lmcache-l2-sim/) | `lmcache-l2-sim` | Simulates a large, slow L2 tier: collapses stored files onto one canonical file per size, and injects configurable store/load latency |
+| [lmcache-l2-sim](lmcache-l2-sim/) | `lmcache-l2-sim` | Simulates a large L2 tier: collapses stored files onto one canonical file per size, and injects configurable store/load latency |
 
 ## Using them in this demo
 
@@ -28,10 +28,10 @@ resolves by dotted module path:
 
 ```
 plugins/
-  <distribution-name>/        e.g. lmcache-slow-l2
-    pyproject.toml            name = "lmcache-slow-l2", packages = ["lmcache_slowfs"]
+  <distribution-name>/        e.g. lmcache-l2-trace
+    pyproject.toml            name = "lmcache-l2-trace", packages = ["lmcache_l2_trace"]
     README.md                 what it does, parameters, caveats
-    <import_package>/         e.g. lmcache_slowfs/ -- must be unique across plugins,
+    <import_package>/         e.g. lmcache_l2_trace/ -- must be unique across plugins,
       __init__.py             since module_path resolves by dotted name
       ...
 ```

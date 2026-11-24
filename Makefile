@@ -1,7 +1,8 @@
 # LMCache Fleet Demo — see scripts/gen_compose.py
 COMPOSE := docker compose -f docker/docker-compose.yml
-# Tests need lmcache importable; the published image also ships pytest.
-LMCACHE_IMAGE ?= lmcache/standalone:v0.5.8
+# Built from docker/Dockerfile, not pulled. `make image` builds it and every
+# target that needs it depends on that, so a fresh clone needs no extra step.
+LMCACHE_IMAGE ?= lmcache-fleet-demo/lmcache:0.5.8-cpu
 NUM ?= 3
 SEQ ?= 8
 SHOT ?= grafana.png
@@ -15,20 +16,25 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim run dash targets report check shot test-plugins down clean logs env-vars
+.PHONY: help image gen up stim run dash targets report check shot test-plugins down clean logs env-vars
 
 ##@ Fleet Lifecycle
+
+image: ## Build the CPU-only lmcache image (no-op if it already exists)
+	@docker image inspect $(LMCACHE_IMAGE) >/dev/null 2>&1 || { \
+		echo "building $(LMCACHE_IMAGE) from docker/Dockerfile..."; \
+		docker build -f docker/Dockerfile -t $(LMCACHE_IMAGE) . ; }
 
 gen: ## Regenerate docker-compose.yml for NUM servers
 	NUM_SERVERS=$(NUM) SEQ=$(SEQ) python3 scripts/gen_compose.py
 
-up: gen ## Regenerate, then start the fleet plus prometheus and grafana
+up: image gen ## Regenerate, then start the fleet plus prometheus and grafana
 	$(COMPOSE) up -d
 	@echo "waiting for servers to be healthy..."
 	@$(COMPOSE) ps --format '{{.Name}} {{.Status}}'
 	@$(MAKE) --no-print-directory dash
 
-stim: gen ## Run the one-shot bench stimulators to store KV chunks
+stim: image gen ## Run the one-shot bench stimulators to store KV chunks
 	$(COMPOSE) --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
 
 # `up` and `stim` stay separate so the stimulators can be re-run against a warm
@@ -37,7 +43,7 @@ stim: gen ## Run the one-shot bench stimulators to store KV chunks
 run: up stim ## Start the fleet and immediately run the stimulators
 	@echo "fleet running; 'make report NUM=$(NUM)' or 'make dash' to watch"
 
-test-plugins: ## Run the plugin test suites inside the lmcache image
+test-plugins: image ## Run the plugin test suites inside the lmcache image
 	@docker run --rm \
 		-v "$(CURDIR)/plugins:/plugins:ro" \
 		-e HOME=/tmp -e PYTHONPATH=/plugins/lmcache-l2-sim \
