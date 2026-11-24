@@ -56,7 +56,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Keys tracked",
+      "title": "Keys Tracked",
       "description": "Unique keys the coordinator's directory holds at least one placement for.",
       "datasource": {
         "type": "prometheus",
@@ -116,7 +116,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Servers registered",
+      "title": "Servers Registered",
       "description": "MP servers currently heartbeating to the coordinator.",
       "datasource": {
         "type": "prometheus",
@@ -176,7 +176,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "L1 placements",
+      "title": "L1 Placements",
       "description": "Key copies resident in some server's L1 DRAM tier.",
       "datasource": {
         "type": "prometheus",
@@ -236,7 +236,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "L2 placements",
+      "title": "L2 Placements",
       "description": "Key copies written through to an L2 backend. Counts only what was written while this coordinator has been up: nothing scans L2 at startup, so .data files left by an earlier run read as 0 here.",
       "datasource": {
         "type": "prometheus",
@@ -296,7 +296,7 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Where the fleet's KV lives \u2014 placements by tier",
+      "title": "Fleet Keys by Tier",
       "description": "Coordinator's own view. A placement is one place a key is stored: L1 on one server, or one L2 backend. Stacked, so total height is every copy the fleet holds.",
       "datasource": {
         "type": "prometheus",
@@ -344,7 +344,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l1"
+              "options": "L1 (CPU DRAM)"
             },
             "properties": [
               {
@@ -359,7 +359,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l2"
+              "options": "L2 (Filesystem)"
             },
             "properties": [
               {
@@ -396,15 +396,24 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_coordinator_key_directory_placements",
-          "legendFormat": "{{tier}}"
+          "expr": "lmcache_coordinator_key_directory_placements{tier=\"l1\"}",
+          "legendFormat": "L1 (CPU DRAM)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_coordinator_key_directory_placements{tier=\"l2\"}",
+          "legendFormat": "L2 (Filesystem)"
         }
       ]
     },
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Fleet bytes by tier",
+      "title": "Fleet Bytes by Tier",
       "description": "Bytes the fleet reports holding, as aggregated by the coordinator.",
       "datasource": {
         "type": "prometheus",
@@ -452,7 +461,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l1"
+              "options": "L1 (CPU DRAM)"
             },
             "properties": [
               {
@@ -467,7 +476,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l2"
+              "options": "L2 (Filesystem)"
             },
             "properties": [
               {
@@ -504,15 +513,24 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_coordinator_usage_bytes_stored",
-          "legendFormat": "{{tier}}"
+          "expr": "lmcache_coordinator_usage_bytes_stored{tier=\"l1\"}",
+          "legendFormat": "L1 (CPU DRAM)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_coordinator_usage_bytes_stored{tier=\"l2\"}",
+          "legendFormat": "L2 (Filesystem)"
         }
       ]
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "L1 keys per server \u2014 coordinator's view",
+      "title": "L1 Keys per Server \u2014 Coordinator's View",
       "description": "lmcache_coordinator_key_directory_server_l1_keys: what each server reported to the coordinator's key directory. The coordinator identifies servers by UUID, so this joins through the servers' target_info to recover the friendly name. A sudden drop to 0 is a fence, not an eviction. Cross-check against the panel on the right: they come from independent sources and should agree.",
       "datasource": {
         "type": "prometheus",
@@ -706,7 +724,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Resident L1 chunks per server \u2014 servers' own view",
+      "title": "Resident L1 Chunks per Server \u2014 Servers' Own View",
       "description": "Chunks written to L1 minus chunks evicted from it, straight from each server. Independent of the coordinator's event stream, so a disagreement with the panel on the left means a directory consumer has drifted from what the servers actually hold.",
       "datasource": {
         "type": "prometheus",
@@ -900,7 +918,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "L1 bytes per server",
+      "title": "L1 Bytes per Server",
       "description": "Bytes resident in each server's L1 DRAM tier.",
       "datasource": {
         "type": "prometheus",
@@ -1094,7 +1112,7 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "L1 usage ratio per server",
+      "title": "L1 Usage Ratio per Server",
       "description": "Used/total per server. The dashed line is the default --eviction-trigger-watermark (0.8); crossing it spills L1 to L2.",
       "datasource": {
         "type": "prometheus",
@@ -1305,7 +1323,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "L2 bytes per server and adapter",
+      "title": "L2 Bytes per Server and Adapter",
       "description": "Bytes in each attached L2 adapter. Like the L2 placement count, this reflects only the current process lifetime \u2014 blobs left on disk by an earlier run are not discovered at startup and read as 0.",
       "datasource": {
         "type": "prometheus",
@@ -1499,7 +1517,7 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "L1 chunk writes/sec",
+      "title": "L1 Chunk Writes/Second",
       "description": "Rate of chunks admitted into L1.",
       "datasource": {
         "type": "prometheus",
@@ -1693,7 +1711,7 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "L1 evictions/sec",
+      "title": "L1 Evictions/Second",
       "description": "Rate of chunks evicted from L1 \u2014 the spill to L2.",
       "datasource": {
         "type": "prometheus",
@@ -1887,7 +1905,7 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "Lookup hit tokens/sec by tier",
+      "title": "Lookup Hit Tokens/Second by Tier",
       "description": "Which tier served the hits, fleet-wide.",
       "datasource": {
         "type": "prometheus",
@@ -1931,7 +1949,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l1"
+              "options": "L1 (CPU DRAM)"
             },
             "properties": [
               {
@@ -1946,7 +1964,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l2"
+              "options": "L2 (Filesystem)"
             },
             "properties": [
               {
@@ -1984,7 +2002,7 @@
             "uid": "lmcache-prom"
           },
           "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[1m]))",
-          "legendFormat": "l1"
+          "legendFormat": "L1 (CPU DRAM)"
         },
         {
           "refId": "B",
@@ -1993,14 +2011,14 @@
             "uid": "lmcache-prom"
           },
           "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[1m]))",
-          "legendFormat": "l2"
+          "legendFormat": "L2 (Filesystem)"
         }
       ]
     },
     {
       "id": 15,
       "type": "row",
-      "title": "Key directory inventory (directory exporter)",
+      "title": "Key Directory Inventory (Directory Exporter)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -2013,7 +2031,7 @@
     {
       "id": 16,
       "type": "timeseries",
-      "title": "L2 placements per server",
+      "title": "L2 Placements per Server",
       "description": "KV blocks each server holds in L2, counted from the coordinator's key directory. The coordinator's own metrics only give this fleet-wide; the exporter derives the per-server split by listing the directory.",
       "datasource": {
         "type": "prometheus",
@@ -2207,7 +2225,7 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "L2 logical bytes per server",
+      "title": "L2 Logical Bytes per Server",
       "description": "Bytes the directory attributes to each server's L2. Logical: under the dedup adapter the disk holds far less.",
       "datasource": {
         "type": "prometheus",
@@ -2401,7 +2419,7 @@
     {
       "id": 18,
       "type": "timeseries",
-      "title": "L2 blocks by age",
+      "title": "L2 Blocks by Age",
       "description": "How long each L2 block has existed, in the exporter's named age bands. Age is time since the exporter first saw the block; it checkpoints these so a restart no longer resets them. Colours assume the default seven bands \u2014 if you override AGE_BOUNDS, read the heatmap below instead, which follows any bounds.",
       "datasource": {
         "type": "prometheus",
@@ -2584,7 +2602,7 @@
     {
       "id": 19,
       "type": "timeseries",
-      "title": "Block age quantiles",
+      "title": "Block Age Quantiles",
       "description": "Computed at query time from the age histogram, so it needs no fixed bands. Quantiles are interpolated within a bucket: with coarse bounds the value is approximate, and it can never exceed the largest bound while blocks sit in the +Inf band.",
       "datasource": {
         "type": "prometheus",
@@ -2628,7 +2646,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "L2 median"
+              "options": "L2 (Filesystem) Median"
             },
             "properties": [
               {
@@ -2643,7 +2661,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "L2 p90"
+              "options": "L2 (Filesystem) P90"
             },
             "properties": [
               {
@@ -2658,7 +2676,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "L1 median"
+              "options": "L1 (CPU DRAM) Median"
             },
             "properties": [
               {
@@ -2696,7 +2714,7 @@
             "uid": "lmcache-prom"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l2\",server=~\"$server\"}))",
-          "legendFormat": "L2 median"
+          "legendFormat": "L2 (Filesystem) Median"
         },
         {
           "refId": "B",
@@ -2705,7 +2723,7 @@
             "uid": "lmcache-prom"
           },
           "expr": "histogram_quantile(0.9, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l2\",server=~\"$server\"}))",
-          "legendFormat": "L2 p90"
+          "legendFormat": "L2 (Filesystem) P90"
         },
         {
           "refId": "C",
@@ -2714,14 +2732,14 @@
             "uid": "lmcache-prom"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l1\",server=~\"$server\"}))",
-          "legendFormat": "L1 median"
+          "legendFormat": "L1 (CPU DRAM) Median"
         }
       ]
     },
     {
       "id": 20,
       "type": "heatmap",
-      "title": "L2 block age distribution over time",
+      "title": "L2 Block Age Distribution over Time",
       "description": "Each column is one moment; colour is how many L2 blocks fall in that age band. A diagonal means a cohort ageing together; a bright bottom row means fresh blocks arriving.",
       "datasource": {
         "type": "prometheus",
@@ -2784,7 +2802,7 @@
     {
       "id": 21,
       "type": "timeseries",
-      "title": "L1 blocks by age",
+      "title": "L1 Blocks by Age",
       "description": "How long blocks currently in L1 have been there. With a small L1 under constant eviction this stays young; old L1 blocks mean the tier has stopped turning over.",
       "datasource": {
         "type": "prometheus",
@@ -2967,7 +2985,7 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "Oldest L2 block per server",
+      "title": "Oldest L2 Block per Server",
       "description": "Age of the longest-lived block in each server's L2. A steadily climbing line means nothing is being evicted from L2.",
       "datasource": {
         "type": "prometheus",
@@ -3161,7 +3179,7 @@
     {
       "id": 23,
       "type": "timeseries",
-      "title": "Keys by number of servers holding them",
+      "title": "Keys by Number of Servers Holding Them",
       "description": "Replication across the fleet. Keys held by one server are unique to it; keys held by several come from overlapping stimulator windows.",
       "datasource": {
         "type": "prometheus",
@@ -3209,7 +3227,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1 server"
+              "options": "1 Server"
             },
             "properties": [
               {
@@ -3224,7 +3242,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "2 servers"
+              "options": "2 Servers"
             },
             "properties": [
               {
@@ -3239,7 +3257,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "3+ servers"
+              "options": "3+ Servers"
             },
             "properties": [
               {
@@ -3277,7 +3295,7 @@
             "uid": "lmcache-prom"
           },
           "expr": "lmcache_directory_keys_by_replicas{replicas=\"1\"}",
-          "legendFormat": "1 server"
+          "legendFormat": "1 Server"
         },
         {
           "refId": "B",
@@ -3286,7 +3304,7 @@
             "uid": "lmcache-prom"
           },
           "expr": "lmcache_directory_keys_by_replicas{replicas=\"2\"}",
-          "legendFormat": "2 servers"
+          "legendFormat": "2 Servers"
         },
         {
           "refId": "C",
@@ -3295,14 +3313,14 @@
             "uid": "lmcache-prom"
           },
           "expr": "lmcache_directory_keys_by_replicas{replicas=\"3+\"}",
-          "legendFormat": "3+ servers"
+          "legendFormat": "3+ Servers"
         }
       ]
     },
     {
       "id": 24,
       "type": "timeseries",
-      "title": "Block churn per minute",
+      "title": "Block Churn per Minute",
       "description": "Blocks entering and leaving each tier, as seen between directory polls. A block that appears and disappears between two polls is not counted.",
       "datasource": {
         "type": "prometheus",
@@ -3346,7 +3364,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l1 added"
+              "options": "L1 (CPU DRAM) Added"
             },
             "properties": [
               {
@@ -3361,7 +3379,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l2 added"
+              "options": "L2 (Filesystem) Added"
             },
             "properties": [
               {
@@ -3376,7 +3394,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l1 removed"
+              "options": "L1 (CPU DRAM) Removed"
             },
             "properties": [
               {
@@ -3391,7 +3409,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "l2 removed"
+              "options": "L2 (Filesystem) Removed"
             },
             "properties": [
               {
@@ -3428,8 +3446,8 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (tier) (rate(lmcache_directory_placements_added_total{server=~\"$server\"}[2m])) * 60",
-          "legendFormat": "{{tier}} added"
+          "expr": "sum(rate(lmcache_directory_placements_added_total{tier=\"l1\",server=~\"$server\"}[2m])) * 60",
+          "legendFormat": "L1 (CPU DRAM) Added"
         },
         {
           "refId": "B",
@@ -3437,15 +3455,33 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (tier) (rate(lmcache_directory_placements_removed_total{server=~\"$server\"}[2m])) * 60",
-          "legendFormat": "{{tier}} removed"
+          "expr": "sum(rate(lmcache_directory_placements_added_total{tier=\"l2\",server=~\"$server\"}[2m])) * 60",
+          "legendFormat": "L2 (Filesystem) Added"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum(rate(lmcache_directory_placements_removed_total{tier=\"l1\",server=~\"$server\"}[2m])) * 60",
+          "legendFormat": "L1 (CPU DRAM) Removed"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum(rate(lmcache_directory_placements_removed_total{tier=\"l2\",server=~\"$server\"}[2m])) * 60",
+          "legendFormat": "L2 (Filesystem) Removed"
         }
       ]
     },
     {
       "id": 25,
       "type": "timeseries",
-      "title": "Keys by access count",
+      "title": "Keys by Access Count",
       "description": "How often the coordinator reports each key as accessed.",
       "datasource": {
         "type": "prometheus",
