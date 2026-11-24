@@ -17,7 +17,37 @@
   },
   "timepicker": {},
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "lmcache-prom"
+        },
+        "definition": "label_values(lmcache_directory_placements, server)",
+        "query": {
+          "query": "label_values(lmcache_directory_placements, server)",
+          "refId": "server"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "sort": 1,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ],
+          "selected": true
+        },
+        "options": []
+      }
+    ]
   },
   "annotations": {
     "list": []
@@ -273,7 +303,7 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
         "y": 4
@@ -345,10 +375,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -377,7 +411,7 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
         "y": 4
@@ -449,10 +483,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -481,10 +519,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 15
       },
       "fieldConfig": {
         "defaults": {
@@ -639,10 +677,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -656,7 +698,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_coordinator_key_directory_server_l1_keys * on(instance_id) group_left(server) label_replace(target_info{job=\"lmcache-servers\"},\"instance_id\",\"$1\",\"service_instance_id\",\"(.*)\")",
+          "expr": "lmcache_coordinator_key_directory_server_l1_keys * on(instance_id) group_left(server) label_replace(target_info{job=\"lmcache-servers\",server=~\"$server\"},\"instance_id\",\"$1\",\"service_instance_id\",\"(.*)\")",
           "legendFormat": "{{server}}"
         }
       ]
@@ -671,10 +713,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 15
       },
       "fieldConfig": {
         "defaults": {
@@ -829,10 +871,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -846,7 +892,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_mp_l1_write_chunks_total - lmcache_mp_l1_evicted_chunks_total",
+          "expr": "lmcache_mp_l1_write_chunks_total{server=~\"$server\"} - lmcache_mp_l1_evicted_chunks_total{server=~\"$server\"}",
           "legendFormat": "{{server}}"
         }
       ]
@@ -861,10 +907,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 26
       },
       "fieldConfig": {
         "defaults": {
@@ -1019,10 +1065,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1036,7 +1086,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_mp_l1_memory_usage_bytes",
+          "expr": "lmcache_mp_l1_memory_usage_bytes{server=~\"$server\"}",
           "legendFormat": "{{server}}"
         }
       ]
@@ -1051,10 +1101,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 26
       },
       "fieldConfig": {
         "defaults": {
@@ -1226,10 +1276,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1243,7 +1297,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_mp_l1_usage_ratio",
+          "expr": "lmcache_mp_l1_usage_ratio{server=~\"$server\"}",
           "legendFormat": "{{server}}"
         }
       ]
@@ -1258,10 +1312,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 37
       },
       "fieldConfig": {
         "defaults": {
@@ -1416,10 +1470,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1433,7 +1491,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_mp_l2_usage_bytes",
+          "expr": "lmcache_mp_l2_usage_bytes{server=~\"$server\"}",
           "legendFormat": "{{server}} \u00b7 {{l2_name}}"
         }
       ]
@@ -1448,10 +1506,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1606,10 +1664,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1623,7 +1685,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "rate(lmcache_mp_l1_write_chunks_total[1m])",
+          "expr": "rate(lmcache_mp_l1_write_chunks_total{server=~\"$server\"}[1m])",
           "legendFormat": "{{server}}"
         }
       ]
@@ -1638,10 +1700,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 37
       },
       "fieldConfig": {
         "defaults": {
@@ -1796,10 +1858,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1813,7 +1879,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "rate(lmcache_mp_l1_evicted_chunks_total[1m])",
+          "expr": "rate(lmcache_mp_l1_evicted_chunks_total{server=~\"$server\"}[1m])",
           "legendFormat": "{{server}}"
         }
       ]
@@ -1828,10 +1894,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1896,10 +1962,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -1936,7 +2006,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 59
       },
       "panels": []
     },
@@ -1950,10 +2020,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 60
       },
       "fieldConfig": {
         "defaults": {
@@ -2108,10 +2178,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -2125,7 +2199,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (server) (lmcache_directory_placements{tier=\"l2\"})",
+          "expr": "sum by (server) (lmcache_directory_placements{tier=\"l2\",server=~\"$server\"})",
           "legendFormat": "{{server}}"
         }
       ]
@@ -2140,10 +2214,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 60
       },
       "fieldConfig": {
         "defaults": {
@@ -2298,10 +2372,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -2315,7 +2393,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (server) (lmcache_directory_placement_bytes{tier=\"l2\"})",
+          "expr": "sum by (server) (lmcache_directory_placement_bytes{tier=\"l2\",server=~\"$server\"})",
           "legendFormat": "{{server}}"
         }
       ]
@@ -2324,16 +2402,16 @@
       "id": 18,
       "type": "timeseries",
       "title": "L2 blocks by age",
-      "description": "How long each L2 block has existed, fleet-wide. Age is measured from when the exporter first saw the block, so blocks that predate the exporter start young and an exporter restart resets ages.",
+      "description": "How long each L2 block has existed, in the exporter's named age bands. Age is time since the exporter first saw the block; it checkpoints these so a restart no longer resets them. Colours assume the default seven bands \u2014 if you override AGE_BOUNDS, read the heatmap below instead, which follows any bounds.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 53
+        "y": 71
       },
       "fieldConfig": {
         "defaults": {
@@ -2371,7 +2449,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "0-1m"
+              "options": "0-5m"
             },
             "properties": [
               {
@@ -2386,7 +2464,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1-5m"
+              "options": "5-30m"
             },
             "properties": [
               {
@@ -2401,7 +2479,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "5-15m"
+              "options": "30m-1h"
             },
             "properties": [
               {
@@ -2416,7 +2494,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "15-30m"
+              "options": "1-2h"
             },
             "properties": [
               {
@@ -2431,7 +2509,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "30-60m"
+              "options": "2-4h"
             },
             "properties": [
               {
@@ -2446,7 +2524,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1-2h"
+              "options": "4-8h"
             },
             "properties": [
               {
@@ -2461,7 +2539,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "2h+"
+              "options": "8h+"
             },
             "properties": [
               {
@@ -2477,10 +2555,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -2494,13 +2576,213 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l2\"})",
+          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l2\",server=~\"$server\"})",
           "legendFormat": "{{age}}"
         }
       ]
     },
     {
       "id": 19,
+      "type": "timeseries",
+      "title": "Block age quantiles",
+      "description": "Computed at query time from the age histogram, so it needs no fixed bands. Quantiles are interpolated within a bucket: with coarse bounds the value is approximate, and it can never exceed the largest bound while blocks sit in the +Inf band.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "gradientMode": "none",
+            "lineInterpolation": "linear",
+            "pointSize": 8,
+            "axisBorderShow": false,
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L2 median"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L2 p90"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L1 median"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l2\",server=~\"$server\"}))",
+          "legendFormat": "L2 median"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l2\",server=~\"$server\"}))",
+          "legendFormat": "L2 p90"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l1\",server=~\"$server\"}))",
+          "legendFormat": "L1 median"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "heatmap",
+      "title": "L2 block age distribution over time",
+      "description": "Each column is one moment; colour is how many L2 blocks fall in that age band. A diagonal means a cohort ageing together; a bright bottom row means fresh blocks arriving.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 82
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "cellValues": {
+          "unit": "short"
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Blues",
+          "steps": 64,
+          "reverse": false,
+          "exponent": 0.5,
+          "fill": "#3987e5"
+        },
+        "filterValues": {
+          "le": 1e-09
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto",
+          "value": "blocks"
+        },
+        "tooltip": {
+          "mode": "single",
+          "yHistogram": true,
+          "showColorScale": true
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "unit": "s",
+          "reverse": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier=\"l2\",server=~\"$server\"})",
+          "format": "heatmap",
+          "legendFormat": "{{le}}"
+        }
+      ]
+    },
+    {
+      "id": 21,
       "type": "timeseries",
       "title": "L1 blocks by age",
       "description": "How long blocks currently in L1 have been there. With a small L1 under constant eviction this stays young; old L1 blocks mean the tier has stopped turning over.",
@@ -2509,10 +2791,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 53
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
@@ -2550,7 +2832,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "0-1m"
+              "options": "0-5m"
             },
             "properties": [
               {
@@ -2565,7 +2847,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1-5m"
+              "options": "5-30m"
             },
             "properties": [
               {
@@ -2580,7 +2862,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "5-15m"
+              "options": "30m-1h"
             },
             "properties": [
               {
@@ -2595,7 +2877,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "15-30m"
+              "options": "1-2h"
             },
             "properties": [
               {
@@ -2610,7 +2892,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "30-60m"
+              "options": "2-4h"
             },
             "properties": [
               {
@@ -2625,7 +2907,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "1-2h"
+              "options": "4-8h"
             },
             "properties": [
               {
@@ -2640,7 +2922,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "2h+"
+              "options": "8h+"
             },
             "properties": [
               {
@@ -2656,10 +2938,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -2673,13 +2959,13 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l1\"})",
+          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l1\",server=~\"$server\"})",
           "legendFormat": "{{age}}"
         }
       ]
     },
     {
-      "id": 20,
+      "id": 22,
       "type": "timeseries",
       "title": "Oldest L2 block per server",
       "description": "Age of the longest-lived block in each server's L2. A steadily climbing line means nothing is being evicted from L2.",
@@ -2688,10 +2974,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 61
+        "y": 93
       },
       "fieldConfig": {
         "defaults": {
@@ -2846,10 +3132,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -2863,13 +3153,13 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_directory_oldest_placement_age_seconds{tier=\"l2\"}",
+          "expr": "lmcache_directory_oldest_placement_age_seconds{tier=\"l2\",server=~\"$server\"}",
           "legendFormat": "{{server}}"
         }
       ]
     },
     {
-      "id": 21,
+      "id": 23,
       "type": "timeseries",
       "title": "Keys by number of servers holding them",
       "description": "Replication across the fleet. Keys held by one server are unique to it; keys held by several come from overlapping stimulator windows.",
@@ -2878,10 +3168,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 61
+        "y": 93
       },
       "fieldConfig": {
         "defaults": {
@@ -2965,10 +3255,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -3006,7 +3300,7 @@
       ]
     },
     {
-      "id": 22,
+      "id": 24,
       "type": "timeseries",
       "title": "Block churn per minute",
       "description": "Blocks entering and leaving each tier, as seen between directory polls. A block that appears and disappears between two polls is not counted.",
@@ -3015,10 +3309,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 69
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -3113,10 +3407,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -3130,7 +3428,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (tier) (rate(lmcache_directory_placements_added_total[2m])) * 60",
+          "expr": "sum by (tier) (rate(lmcache_directory_placements_added_total{server=~\"$server\"}[2m])) * 60",
           "legendFormat": "{{tier}} added"
         },
         {
@@ -3139,13 +3437,13 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (tier) (rate(lmcache_directory_placements_removed_total[2m])) * 60",
+          "expr": "sum by (tier) (rate(lmcache_directory_placements_removed_total{server=~\"$server\"}[2m])) * 60",
           "legendFormat": "{{tier}} removed"
         }
       ]
     },
     {
-      "id": 23,
+      "id": 25,
       "type": "timeseries",
       "title": "Keys by access count",
       "description": "How often the coordinator reports each key as accessed.",
@@ -3154,10 +3452,10 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 69
+        "y": 104
       },
       "fieldConfig": {
         "defaults": {
@@ -3271,10 +3569,14 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",

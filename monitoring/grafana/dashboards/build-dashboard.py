@@ -15,7 +15,7 @@ L1, L2 = "#3987e5", "#d95926"
 COORD_PER_SERVER = (
     "lmcache_coordinator_key_directory_server_l1_keys"
     " * on(instance_id) group_left(server) "
-    'label_replace(target_info{job="lmcache-servers"},'
+    'label_replace(target_info{job="lmcache-servers",server=~"$server"},'
     '"instance_id","$1","service_instance_id","(.*)")'
 )
 
@@ -35,7 +35,8 @@ def nid():
 # the background and the high end is lightest, so the oldest / most accessed
 # bucket stands out. Only ramp steps that keep contrast against the surface.
 SEQ_BLUES = ["#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef", "#9ec5f4", "#cde2fb"]
-AGE_LABELS = ["0-1m", "1-5m", "5-15m", "15-30m", "30-60m", "1-2h", "2h+"]
+# Keep in step with AGE_BUCKETS in monitoring/exporter/directory_exporter.py.
+AGE_LABELS = ["0-5m", "5-30m", "30m-1h", "1-2h", "2-4h", "4-8h", "8h+"]
 AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES)]
 ACCESS_LABELS = ["0", "1-2", "3-5", "6-10", "11+"]
 ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i]) for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6))]
@@ -63,6 +64,32 @@ def stat(title, expr, unit, x, y, w=6, h=4, desc=""):
         "targets": [{"refId": "A", "datasource": DS, "expr": expr, "instant": False}],
     }
 
+def heatmap(title, expr, x, y, w=12, h=11, desc=""):
+    """Age distribution over time, bucketed at query time from the histogram.
+
+    Reads the exporter's cumulative histogram, so the bands shown follow the
+    exporter's AGE_BOUNDS without the dashboard hardcoding them.
+    """
+    return {
+        "id": nid(), "type": "heatmap", "title": title, "description": desc,
+        "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "options": {
+            "calculate": False,
+            "cellGap": 2,
+            "cellValues": {"unit": "short"},
+            "color": {"mode": "scheme", "scheme": "Blues", "steps": 64,
+                      "reverse": False, "exponent": 0.5, "fill": "#3987e5"},
+            "filterValues": {"le": 1e-9},
+            "legend": {"show": True},
+            "rowsFrame": {"layout": "auto", "value": "blocks"},
+            "tooltip": {"mode": "single", "yHistogram": True, "showColorScale": True},
+            "yAxis": {"axisPlacement": "left", "unit": "s", "reverse": False},
+        },
+        "targets": [{"refId": "A", "datasource": DS, "expr": expr,
+                     "format": "heatmap", "legendFormat": "{{le}}"}],
+    }
+
+
 def ts(title, targets, unit, x, y, w=12, h=8, overrides=(), stacked=False,
        fill=0, desc="", maxv=None, thresholds=None):
     custom = {
@@ -87,8 +114,9 @@ def ts(title, targets, unit, x, y, w=12, h=8, overrides=(), stacked=False,
         "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
         "fieldConfig": {"defaults": defaults, "overrides": list(overrides)},
         "options": {
-            "legend": {"displayMode": "list", "placement": "bottom",
-                       "showLegend": True, "calcs": []},
+            "legend": {"displayMode": "table", "placement": "bottom",
+                       "showLegend": True,
+                       "calcs": ["lastNotNull", "mean", "max"]},
             "tooltip": {"mode": "multi", "sort": "desc"},
         },
         "targets": [{"refId": chr(65 + i), "datasource": DS,
@@ -128,7 +156,7 @@ panels = [
             "fence, not an eviction. Cross-check against the panel on the right: "
             "they come from independent sources and should agree."),
     ts("Resident L1 chunks per server — servers' own view",
-       [("lmcache_mp_l1_write_chunks_total - lmcache_mp_l1_evicted_chunks_total",
+       [('lmcache_mp_l1_write_chunks_total{server=~"$server"} - lmcache_mp_l1_evicted_chunks_total{server=~"$server"}',
          "{{server}}")],
        "short", 12, 12, overrides=SERVER_OVERRIDES,
        desc="Chunks written to L1 minus chunks evicted from it, straight from "
@@ -136,12 +164,12 @@ panels = [
             "disagreement with the panel on the left means a directory consumer "
             "has drifted from what the servers actually hold."),
     ts("L1 bytes per server",
-       [("lmcache_mp_l1_memory_usage_bytes", "{{server}}")],
+       [('lmcache_mp_l1_memory_usage_bytes{server=~"$server"}', "{{server}}")],
        "bytes", 0, 20, overrides=SERVER_OVERRIDES,
        desc="Bytes resident in each server's L1 DRAM tier."),
 
     ts("L1 usage ratio per server",
-       [("lmcache_mp_l1_usage_ratio", "{{server}}")],
+       [('lmcache_mp_l1_usage_ratio{server=~"$server"}', "{{server}}")],
        "percentunit", 12, 20, overrides=SERVER_OVERRIDES, maxv=1,
        thresholds={"mode": "absolute",
                    "steps": [{"color": "transparent", "value": None},
@@ -149,18 +177,18 @@ panels = [
        desc="Used/total per server. The dashed line is the default "
             "--eviction-trigger-watermark (0.8); crossing it spills L1 to L2."),
     ts("L2 bytes per server and adapter",
-       [("lmcache_mp_l2_usage_bytes", "{{server}} · {{l2_name}}")],
+       [('lmcache_mp_l2_usage_bytes{server=~"$server"}', "{{server}} · {{l2_name}}")],
        "bytes", 0, 28, overrides=SERVER_OVERRIDES,
        desc="Bytes in each attached L2 adapter. Like the L2 placement count, this "
             "reflects only the current process lifetime — blobs left on disk by "
             "an earlier run are not discovered at startup and read as 0."),
 
     ts("L1 chunk writes/sec",
-       [("rate(lmcache_mp_l1_write_chunks_total[1m])", "{{server}}")],
+       [('rate(lmcache_mp_l1_write_chunks_total{server=~"$server"}[1m])', "{{server}}")],
        "cps", 0, 36, w=12, overrides=SERVER_OVERRIDES,
        desc="Rate of chunks admitted into L1."),
     ts("L1 evictions/sec",
-       [("rate(lmcache_mp_l1_evicted_chunks_total[1m])", "{{server}}")],
+       [('rate(lmcache_mp_l1_evicted_chunks_total{server=~"$server"}[1m])', "{{server}}")],
        "cps", 12, 28, w=12, overrides=SERVER_OVERRIDES,
        desc="Rate of chunks evicted from L1 — the spill to L2."),
     ts("Lookup hit tokens/sec by tier",
@@ -170,31 +198,49 @@ panels = [
        desc="Which tier served the hits, fleet-wide."),
     row("Key directory inventory (directory exporter)", 44),
     ts("L2 placements per server",
-       [('sum by (server) (lmcache_directory_placements{tier="l2"})', "{{server}}")],
+       [('sum by (server) (lmcache_directory_placements{tier="l2",server=~"$server"})', "{{server}}")],
        "short", 0, 45, overrides=SERVER_OVERRIDES,
        desc="KV blocks each server holds in L2, counted from the coordinator's "
             "key directory. The coordinator's own metrics only give this "
             "fleet-wide; the exporter derives the per-server split by listing "
             "the directory."),
     ts("L2 logical bytes per server",
-       [('sum by (server) (lmcache_directory_placement_bytes{tier="l2"})', "{{server}}")],
+       [('sum by (server) (lmcache_directory_placement_bytes{tier="l2",server=~"$server"})', "{{server}}")],
        "bytes", 12, 45, overrides=SERVER_OVERRIDES,
        desc="Bytes the directory attributes to each server's L2. Logical: under "
             "the dedup adapter the disk holds far less."),
     ts("L2 blocks by age",
-       [('sum by (age) (lmcache_directory_placements_by_age{tier="l2"})', "{{age}}")],
+       [('sum by (age) (lmcache_directory_placements_by_age{tier="l2",server=~"$server"})', "{{age}}")],
        "short", 0, 53, stacked=True, fill=70, overrides=AGE_OVERRIDES,
-       desc="How long each L2 block has existed, fleet-wide. Age is measured "
-            "from when the exporter first saw the block, so blocks that predate "
-            "the exporter start young and an exporter restart resets ages."),
+       desc="How long each L2 block has existed, in the exporter's named age "
+            "bands. Age is time since the exporter first saw the block; it "
+            "checkpoints these so a restart no longer resets them. Colours "
+            "assume the default seven bands — if you override AGE_BOUNDS, read "
+            "the heatmap below instead, which follows any bounds."),
+    ts("Block age quantiles",
+       [('histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l2",server=~"$server"}))', "L2 median"),
+        ('histogram_quantile(0.9, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l2",server=~"$server"}))', "L2 p90"),
+        ('histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l1",server=~"$server"}))', "L1 median")],
+       "s", 12, 53, overrides=[color("L2 median", "#d95926"), color("L2 p90", "#c98500"),
+                               color("L1 median", "#3987e5")],
+       desc="Computed at query time from the age histogram, so it needs no "
+            "fixed bands. Quantiles are interpolated within a bucket: with "
+            "coarse bounds the value is approximate, and it can never exceed "
+            "the largest bound while blocks sit in the +Inf band."),
+    heatmap("L2 block age distribution over time",
+            'sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l2",server=~"$server"})',
+            0, 57,
+            desc="Each column is one moment; colour is how many L2 blocks fall "
+                 "in that age band. A diagonal means a cohort ageing together; "
+                 "a bright bottom row means fresh blocks arriving."),
     ts("L1 blocks by age",
-       [('sum by (age) (lmcache_directory_placements_by_age{tier="l1"})', "{{age}}")],
-       "short", 12, 53, stacked=True, fill=70, overrides=AGE_OVERRIDES,
+       [('sum by (age) (lmcache_directory_placements_by_age{tier="l1",server=~"$server"})', "{{age}}")],
+       "short", 12, 57, stacked=True, fill=70, overrides=AGE_OVERRIDES,
        desc="How long blocks currently in L1 have been there. With a small L1 "
             "under constant eviction this stays young; old L1 blocks mean the "
             "tier has stopped turning over."),
     ts("Oldest L2 block per server",
-       [('lmcache_directory_oldest_placement_age_seconds{tier="l2"}', "{{server}}")],
+       [('lmcache_directory_oldest_placement_age_seconds{tier="l2",server=~"$server"}', "{{server}}")],
        "s", 0, 61, overrides=SERVER_OVERRIDES,
        desc="Age of the longest-lived block in each server's L2. A steadily "
             "climbing line means nothing is being evicted from L2."),
@@ -207,9 +253,9 @@ panels = [
             "to it; keys held by several come from overlapping stimulator "
             "windows."),
     ts("Block churn per minute",
-       [('sum by (tier) (rate(lmcache_directory_placements_added_total[2m])) * 60',
+       [('sum by (tier) (rate(lmcache_directory_placements_added_total{server=~"$server"}[2m])) * 60',
          "{{tier}} added"),
-        ('sum by (tier) (rate(lmcache_directory_placements_removed_total[2m])) * 60',
+        ('sum by (tier) (rate(lmcache_directory_placements_removed_total{server=~"$server"}[2m])) * 60',
          "{{tier}} removed")],
        "short", 0, 69, overrides=CHURN_OVERRIDES,
        desc="Blocks entering and leaving each tier, as seen between directory "
@@ -220,6 +266,27 @@ panels = [
        "short", 12, 69, stacked=True, fill=70, overrides=ACCESS_OVERRIDES,
        desc="How often the coordinator reports each key as accessed."),
 ]
+
+# A table legend needs more vertical room than the list one did, so re-flow the
+# grid: keep each panel's declared band and x, but give timeseries panels a
+# taller box and stack the bands without gaps. Declared y values only have to
+# order the bands, not be exact.
+def relayout(panels, ts_height=11):
+    bands = {}
+    for p in panels:
+        bands.setdefault(p["gridPos"]["y"], []).append(p)
+    y = 0
+    for band_y in sorted(bands):
+        band = bands[band_y]
+        for p in band:
+            if p["type"] == "timeseries":
+                p["gridPos"]["h"] = ts_height
+            p["gridPos"]["y"] = y
+        y += max(p["gridPos"]["h"] for p in band)
+    return panels
+
+
+panels = relayout(panels)
 
 dash = {
     "uid": "lmcache-fleet",
@@ -235,7 +302,22 @@ dash = {
     "refresh": "5s",
     "time": {"from": "now-15m", "to": "now"},
     "timepicker": {},
-    "templating": {"list": []},
+    "templating": {"list": [{
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": DS,
+        "definition": "label_values(lmcache_directory_placements, server)",
+        "query": {"query": "label_values(lmcache_directory_placements, server)",
+                  "refId": "server"},
+        "refresh": 2,
+        "includeAll": True,
+        "multi": True,
+        "allValue": ".*",
+        "sort": 1,
+        "current": {"text": ["All"], "value": ["$__all"], "selected": True},
+        "options": [],
+    }]},
     "annotations": {"list": []},
     "panels": panels,
 }

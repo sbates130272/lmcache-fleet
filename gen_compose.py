@@ -272,6 +272,7 @@ services:
     networks: [fleet]
     volumes:
       - ./monitoring/exporter:/exporter:ro
+      - ./data/exporter:/state            # first-seen times, so ages survive a restart
     command: ["python", "-u", "/exporter/directory_exporter.py"]
 
   grafana:
@@ -340,7 +341,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 # invoking user by default, so owner-only write is enough; only fall back to
 # world-writable when RUN_UID has been overridden to someone else.
 BIND_MODE = 0o755 if RUN_UID == str(os.getuid()) else 0o777
-for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)] + ["prometheus", "grafana"]):
+for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
+            + ["prometheus", "grafana", "exporter"]):
     d = os.path.join(here, "data", sub)
     os.makedirs(d, exist_ok=True)
     os.chmod(d, BIND_MODE)

@@ -96,7 +96,29 @@ interchangeable:
 
 Block age is measured by the exporter, not by LMCache: the directory carries no
 timestamps, so a block's age is the time since the exporter first saw it. Blocks
-that predate the exporter start at zero, and restarting it resets every age.
+already present when the exporter first runs start at zero. First-seen times are
+checkpointed to `data/exporter/first_seen.json` every `STATE_SAVE_INTERVAL`
+seconds, so restarting the exporter no longer resets ages.
+
+Age bands are configurable with `AGE_BOUNDS`, a comma-separated list of
+durations — `AGE_BOUNDS=1m,5m,15m,1h` for a short run, `1h,6h,1d,7d` for a soak.
+The default is `5m,30m,1h,2h,4h,8h`. Bucket *labels* are derived from the bounds,
+so the two cannot drift apart.
+
+The exporter also publishes a real Prometheus histogram,
+`lmcache_directory_placement_age_seconds_bucket`, which is what makes the view
+dynamic: the **age quantiles** and **age distribution heatmap** panels compute
+their banding at query time and follow whatever `AGE_BOUNDS` you set. The named
+stacked panel is the readable form, but its colours assume the default seven
+bands. Bounds are deliberately not auto-scaled to the observed ages: labels that
+changed mid-run would churn the Prometheus series and silently mix datapoints
+that used different bucket definitions.
+
+The dashboard has a **Server** variable at the top: pick one server, several, or
+All. It filters every panel whose metric carries a `server` label — the
+per-server L1/L2 panels and the directory inventory. Fleet-wide coordinator
+panels (placements by tier, keys by replica count, access counts) have no such
+label and always show the whole fleet.
 
 The two L1 panels are deliberately redundant: one reads the coordinator's event-
 sourced directory, the other reads the servers directly. They should agree, and
@@ -141,6 +163,7 @@ plus real `.data` files under `data/l2-server-*/`.
 | GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind |
 | SCRAPE_INTERVAL | 5s | Prometheus scrape interval |
 | DIRECTORY_POLL | 15 | seconds between directory exporter polls |
+| AGE_BOUNDS | 5m,30m,1h,2h,4h,8h | age bucket bounds for the exporter (set on the service) |
 | PROM_RETENTION | 6h | how long metric history is kept |
 | SEQ | 6 | distinct synthetic sequences per stimulator |
 | NUM_TOKENS | 512 | tokens per store request (multiple of CHUNK_SIZE) |
