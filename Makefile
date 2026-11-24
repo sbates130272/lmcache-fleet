@@ -4,6 +4,8 @@ COMPOSE := docker compose -f docker/docker-compose.yml
 LMCACHE_IMAGE ?= lmcache/standalone:v0.5.8
 NUM ?= 3
 SEQ ?= 8
+SHOT ?= grafana.png
+SETTLE ?= 8
 
 define TARGETS_PY
 import json, sys
@@ -13,7 +15,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim run dash targets report test-plugins down clean logs env-vars
+.PHONY: help gen up stim run dash targets report check shot test-plugins down clean logs env-vars
 
 ##@ Fleet Lifecycle
 
@@ -59,6 +61,14 @@ targets: ## Show what Prometheus is scraping and whether it is up
 
 report: ## Print the key directory, per-server L1 usage and L2 files vs disk
 	scripts/report.sh $(NUM)
+
+check: ## Assert every server registered and holds both L1 and L2 placements
+	python3 scripts/check_fleet.py $(NUM)
+
+shot: ## Screenshot the Grafana dashboard to SHOT (needs playwright chromium)
+	@port=$$($(COMPOSE) port grafana 3000 2>/dev/null | cut -d: -f2); \
+	if [ -z "$$port" ]; then echo "grafana is not running — try 'make up'"; exit 1; fi; \
+	python3 scripts/grafana_shot.py "http://localhost:$$port" -o $(SHOT) --settle $(SETTLE)
 
 logs: ## Follow logs from every service
 	$(COMPOSE) logs -f --tail=100

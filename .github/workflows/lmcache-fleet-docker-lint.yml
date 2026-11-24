@@ -1,0 +1,60 @@
+name: lmcache-fleet - Docker Lint
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dockerfile-lint:
+    name: lmcache-fleet - Dockerfile Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      # Reads .hadolint.yaml from the repo root, which documents why DL3059 and
+      # DL3013 are ignored rather than fixed.
+      - name: Run hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+
+  compose-lint:
+    name: lmcache-fleet - Compose Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      # docker/docker-compose.yml is generated and gitignored, so there is no
+      # checked-in file to lint. Linting the generator's *output* is the point:
+      # it is what anyone running this actually feeds to compose. Both variants
+      # are checked because L2_DEDUP=1 takes a different branch in the
+      # generator -- it adds the plugin mount, a PYTHONPATH, and drops the
+      # stimulators' --url.
+      - name: Validate generated compose, stock fs adapter
+        run: |
+          NUM_SERVERS=3 SEQ=8 python3 scripts/gen_compose.py
+          docker compose -f docker/docker-compose.yml config -q
+
+      - name: Validate generated compose, L2 sim adapter
+        run: |
+          L2_DEDUP=1 L1_GB=0.05 L2_READ_DELAY_MS=5 L2_DELAY_JITTER=0.2 \
+            NUM_SERVERS=2 SEQ=40 python3 scripts/gen_compose.py
+          docker compose -f docker/docker-compose.yml config -q
+
+      # NUM_COORD is the one input the generator is documented to reject. If it
+      # ever stops rejecting it, the fleet silently builds a split-brain key
+      # directory, so the failure path is worth a check of its own.
+      - name: Reject an unsupported fleet shape
+        run: |
+          if NUM_COORD=2 python3 scripts/gen_compose.py 2>/dev/null; then
+            echo "generator accepted NUM_COORD=2; v0.5.8 has no clustering" >&2
+            exit 1
+          fi
