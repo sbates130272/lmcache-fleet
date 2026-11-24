@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # Default severity, not -S error: the tree is clean at every level today,
       # so there is nothing to buy by lowering the bar now.
