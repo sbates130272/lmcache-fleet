@@ -9,6 +9,12 @@
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
 
+<!-- Not a workflow status: it links to the dashboard the smoke-test lane
+     screenshotted on its last run on main, republished to gh-pages because
+     an artifact URL is per-run and expires. Static label on purpose — the
+     smoke-test badge above already reports whether that run passed. -->
+[![Live Dashboard](https://img.shields.io/badge/Live%20Dashboard-Grafana-orange?style=flat-square&logo=grafana&logoColor=white)](https://sbates130272.github.io/lmcache-fleet/)
+
 [![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?label=License&style=flat-square)](LICENSE)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8-blue?style=flat-square)](https://github.com/LMCache/LMCache/releases/tag/v0.5.8)
 [![CPU Image](https://img.shields.io/badge/CPU%20Image-1.68%20GB-brightgreen?style=flat-square&logo=docker&logoColor=white)](docker/Dockerfile)
@@ -223,12 +229,17 @@ and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
 L2 through the sim adapter, so the spill costs ~1 MB per server instead of
 ~81 MB — the runner's disk never becomes the constraint.
 
-The lane then asserts on the key directory with `make check` and uploads a
-screenshot of the live Grafana dashboard as a build artifact. That artifact is
-the only evidence that the whole monitoring chain worked: Prometheus scraped
-the exporter, the exporter read the coordinator, and the panels rendered it. A
-green check cannot show that; the image can. On failure it uploads fleet logs
-and a container listing instead.
+The lane then asserts on the key directory with `make check` and screenshots
+the live Grafana dashboard. That image is the only evidence the whole
+monitoring chain worked: Prometheus scraped the exporter, the exporter read
+the coordinator, and the panels rendered it. A green check cannot show that.
+
+Every run uploads it as a build artifact, so a PR's own dashboard can be
+inspected before merge. Runs on `main` additionally publish it to
+[**the dashboard page**](https://sbates130272.github.io/lmcache-fleet/) on the
+`gh-pages` branch — artifact URLs are per-run and expire, so that is what the
+README badge can point at and what always shows the current dashboard. On
+failure the lane uploads fleet logs and a container listing instead.
 
 ## Tunables (Environment Variables)
 
