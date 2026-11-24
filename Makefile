@@ -24,6 +24,13 @@ export TARGETS_PY
 # plugin directory needs no Makefile change. PLUGIN=<dir> narrows to one.
 PLUGIN_DIRS := $(patsubst %/,%,$(dir $(wildcard plugins/$(if $(PLUGIN),$(PLUGIN),*)/pyproject.toml)))
 
+# `build` has to be importable by the python3 that runs `python3 -m build`, so
+# pipx is no help: it isolates the module in its own venv and exposes only the
+# pyproject-build entry point. `pip install --user` is no help either on a
+# stock Debian or Ubuntu, whose python3 is externally managed and refuses it.
+# A venv is the one answer that works everywhere.
+PKG_TOOLS_HINT := get them with  python3 -m venv .venv && . .venv/bin/activate && pip install build twine
+
 ##@ Fleet Lifecycle
 
 image: ## Build the CPU-only lmcache image (no-op if it already exists)
@@ -63,9 +70,9 @@ test-plugins: image ## Run the plugin test suites inside the lmcache image
 dist: ## Build and validate sdist+wheel for every plugin (PLUGIN=<dir> for one)
 	@test -n "$(PLUGIN_DIRS)" || { echo "no plugin matching '$(PLUGIN)' under plugins/"; exit 1; }
 	@python3 -c 'import build' 2>/dev/null \
-		|| { echo "missing build; pip install --user build twine"; exit 1; }
+		|| { echo "missing build; $(PKG_TOOLS_HINT)"; exit 1; }
 	@command -v twine >/dev/null \
-		|| { echo "missing twine; pip install --user build twine"; exit 1; }
+		|| { echo "missing twine; $(PKG_TOOLS_HINT)"; exit 1; }
 	@for d in $(PLUGIN_DIRS); do \
 		echo "==> $$d"; \
 		rm -rf "$$d/dist" "$$d"/*.egg-info; \

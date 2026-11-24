@@ -23,8 +23,18 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
+      # A clean interpreter, because `make dist` runs `python3 -m build` and so
+      # needs build *importable*, not merely on PATH. pipx would isolate it in
+      # its own venv and expose only the pyproject-build entry point, and the
+      # system python3 on this runner is externally managed, so `pip install`
+      # into it is refused.
+      - name: Set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install build and twine
-        run: pipx install build && pipx install twine
+        run: python3 -m pip install --upgrade build twine
 
       # Builds an sdist and wheel for every plugins/<dir>/pyproject.toml and
       # runs twine check over both.

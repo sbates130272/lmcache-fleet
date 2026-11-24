@@ -55,9 +55,20 @@ make publish CONFIRM=1                     # upload to PyPI
 
 `dist` removes stale `dist/` and `*.egg-info` first — artifacts from an earlier
 build, or from an earlier package name, would otherwise be uploaded too. The
-targets need `build` and `twine` (`pip install --user build twine`), plus `uv`
-for the precheck, and discover plugins by wildcard, so a new directory with a
-`pyproject.toml` is picked up with no Makefile change.
+targets need `build` and `twine`, plus `uv` for the precheck, and discover
+plugins by wildcard, so a new directory with a `pyproject.toml` is picked up
+with no Makefile change.
+
+`build` has to be *importable* by the `python3` that runs `python3 -m build`,
+not merely on `PATH`, so a venv is the portable way to get these:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install build twine
+```
+
+pipx will not do for `build` — it isolates the module and exposes only the
+`pyproject-build` entry point. Nor will `pip install --user` on a stock Debian
+or Ubuntu, whose `python3` is externally managed and refuses it.
 
 `publish-precheck` installs each freshly built wheel into a throwaway `uv` venv
 and imports its top-level packages. A wheel can build and pass `twine check`
