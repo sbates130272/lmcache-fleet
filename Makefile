@@ -11,7 +11,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help gen up stim dash targets report down clean logs
+.PHONY: help gen up stim run dash targets report down clean logs
 
 ##@ Fleet Lifecycle
 
@@ -26,6 +26,12 @@ up: gen ## Regenerate, then start the fleet plus prometheus and grafana
 
 stim: gen ## Run the one-shot bench stimulators to store KV chunks
 	$(COMPOSE) --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
+
+# `up` and `stim` stay separate so the stimulators can be re-run against a warm
+# fleet, or the fleet inspected before anything is stored. For a plain run,
+# this does both. The stimulators wait on the servers' healthchecks either way.
+run: up stim ## Start the fleet and immediately run the stimulators
+	@echo "fleet running; 'make report NUM=$(NUM)' or 'make dash' to watch"
 
 ##@ Inspection
 
@@ -53,7 +59,7 @@ down: ## Stop and remove the fleet containers
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"
-	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana
+	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana ./data/exporter
 
 ##@ Help
 
