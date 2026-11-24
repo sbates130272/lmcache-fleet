@@ -17,7 +17,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help image gen up stim run dash targets report check shot test-plugins dist publish-precheck publish down clean logs env-vars
+.PHONY: help image gen up stim run dash targets report check shot test-plugins test-released dist publish-precheck publish down clean logs env-vars
 
 # One publishable distribution per plugins/<dir>/pyproject.toml, each built and
 # uploaded on its own. Discovered by wildcard rather than listed, so a new
@@ -66,6 +66,35 @@ test-plugins: image ## Run the plugin test suites inside the lmcache image
 		sh -c '/opt/venv/bin/python -m pytest /plugins/*/tests -q -p no:cacheprovider'
 
 ##@ Packaging
+
+# `make test-plugins` tests the working tree; this tests what people actually
+# install. It pulls each distribution from PyPI into the image and runs the
+# repo's own suite against that copy, so a module missing from the wheel, or a
+# release that drifted from the source it was cut from, fails here. Only the
+# tests directory is mounted — the source package never enters the container,
+# so there is nothing for the installed copy to be shadowed by.
+#
+# The distribution name is the directory name, which is the convention
+# plugins/README.md sets for adding one. VERSION=x.y.z pins a release;
+# unset takes whatever PyPI currently calls latest.
+test-released: image ## Run the plugin tests against the PyPI release, not the working tree
+	@test -n "$(PLUGIN_DIRS)" || { echo "no plugin matching '$(PLUGIN)' under plugins/"; exit 1; }
+	@for d in $(PLUGIN_DIRS); do \
+		name=$$(basename "$$d"); \
+		test -d "$$d/tests" || { echo "==> $$name: no tests/, skipping"; continue; }; \
+		echo "==> $$name$(if $(VERSION),==$(VERSION), (latest)) from PyPI"; \
+		docker run --rm \
+			-v "$(CURDIR)/$$d/tests:/tests:ro" \
+			-e HOME=/tmp -e LMCACHE_DISABLE_BANNER=1 \
+			-e PKG_NAME="$$name" -e PKG_SPEC="$$name$(if $(VERSION),==$(VERSION),)" \
+			--entrypoint "" --user "$(shell id -u):$(shell id -g)" \
+			$(LMCACHE_IMAGE) sh -ec '\
+				/opt/venv/bin/pip install -q --target /tmp/site "$$PKG_SPEC"; \
+				export PYTHONPATH=/tmp/site; \
+				/opt/venv/bin/python -c "import os, importlib.metadata as m; \
+					print(\"    installed\", m.version(os.environ[\"PKG_NAME\"]), \"from PyPI\")"; \
+				/opt/venv/bin/python -m pytest /tests -q -p no:cacheprovider' || exit 1; \
+	done
 
 dist: ## Build and validate sdist+wheel for every plugin (PLUGIN=<dir> for one)
 	@test -n "$(PLUGIN_DIRS)" || { echo "no plugin matching '$(PLUGIN)' under plugins/"; exit 1; }

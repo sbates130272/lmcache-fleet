@@ -9,6 +9,11 @@
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
 [![Package Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-package-check.yml?label=package-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-package-check.yml)
+<!-- Released Check runs weekly on a schedule and on main, so it is pinned to
+     main like smoke-test. It reports on the plugin as published, which is why
+     it sits next to the PyPI version badge rather than with the lint lanes. -->
+[![Released Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-released-check.yml?branch=main&label=released-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-released-check.yml)
+[![PyPI](https://img.shields.io/pypi/v/lmcache-l2-sim?style=flat-square&label=lmcache-l2-sim&color=blue)](https://pypi.org/project/lmcache-l2-sim/)
 
 <!-- Not a workflow status: it links to the dashboard the smoke-test lane
      screenshotted on its last run on main, republished to gh-pages because
