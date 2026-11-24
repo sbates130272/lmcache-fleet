@@ -185,10 +185,12 @@ replication, lower it or narrow `RANGE_LO`/`RANGE_HI`.
 - The `(…)` in `--kvcache-shape-spec` breaks compose's command tokenizer —
   keep it double-quoted.
 - Named volumes for the fs L2 adapter are root-owned → PermissionError from the
-  non-root container uid. Use pre-`chmod 777` bind mounts (gen_compose does this).
-  Services also pin `user: <your uid>:<your gid>` so the `.data` blobs come back
-  owned by you; the image defaults to uid 1000 (`lmcache`), which only happens to
-  be right when your own uid is 1000. A non-1000 uid has no `/etc/passwd` entry
+  non-root container uid. Use bind mounts instead, created by gen_compose and
+  owned by you. Services pin `user: <your uid>:<your gid>`, so the directories
+  only need mode 755 and the `.data` blobs come back owned by you; gen_compose
+  falls back to 777 only if `RUN_UID` is overridden to another user. The image
+  defaults to uid 1000 (`lmcache`), which only happens to be right when your own
+  uid is 1000. A non-1000 uid has no `/etc/passwd` entry
   and lands on `HOME=/`, so the services set `HOME=/tmp`.
 - Don't use `container_name:` here — it is node-global, and names like
   `coordinator` collide with unrelated stacks. Compose's project prefix

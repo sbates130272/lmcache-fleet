@@ -315,11 +315,14 @@ scrape_configs:
 """
 
 here = os.path.dirname(os.path.abspath(__file__))
-# Bind mounts must be writable by the container uid.
+# Bind mounts must be writable by the container uid. Containers run as the
+# invoking user by default, so owner-only write is enough; only fall back to
+# world-writable when RUN_UID has been overridden to someone else.
+BIND_MODE = 0o755 if RUN_UID == str(os.getuid()) else 0o777
 for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)] + ["prometheus", "grafana"]):
     d = os.path.join(here, "data", sub)
     os.makedirs(d, exist_ok=True)
-    os.chmod(d, 0o777)
+    os.chmod(d, BIND_MODE)
 
 mon = os.path.join(here, "monitoring")
 os.makedirs(mon, exist_ok=True)

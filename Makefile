@@ -39,7 +39,7 @@ targets: ## Show what Prometheus is scraping and whether it is up
 		| python3 -c "$$TARGETS_PY" \
 		|| echo "prometheus is not running — try 'make up'"
 
-report: ## Print the coordinator key directory and per-server L1 usage
+report: ## Print the key directory, per-server L1 usage and L2 files vs disk
 	./report.sh $(NUM)
 
 logs: ## Follow logs from every service
