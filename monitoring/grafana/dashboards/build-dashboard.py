@@ -31,6 +31,25 @@ def nid():
     _id[0] += 1
     return _id[0]
 
+# Ordered buckets get one hue. On the dark surface the low end sits closest to
+# the background and the high end is lightest, so the oldest / most accessed
+# bucket stands out. Only ramp steps that keep contrast against the surface.
+SEQ_BLUES = ["#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef", "#9ec5f4", "#cde2fb"]
+AGE_LABELS = ["0-1m", "1-5m", "5-15m", "15-30m", "30-60m", "1-2h", "2h+"]
+AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES)]
+ACCESS_LABELS = ["0", "1-2", "3-5", "6-10", "11+"]
+ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i]) for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6))]
+REPLICA_OVERRIDES = [color("1 server", "#3987e5"), color("2 servers", "#d95926"),
+                     color("3+ servers", "#199e70")]
+CHURN_OVERRIDES = [color("l1 added", "#3987e5"), color("l2 added", "#d95926"),
+                   color("l1 removed", "#199e70"), color("l2 removed", "#c98500")]
+
+
+def row(title, y):
+    return {"id": nid(), "type": "row", "title": title, "collapsed": False,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": y}, "panels": []}
+
+
 def stat(title, expr, unit, x, y, w=6, h=4, desc=""):
     return {
         "id": nid(), "type": "stat", "title": title, "description": desc,
@@ -149,6 +168,57 @@ panels = [
         ('sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[1m]))', "l2")],
        "cps", 12, 36, w=12, overrides=TIER_OVERRIDES,
        desc="Which tier served the hits, fleet-wide."),
+    row("Key directory inventory (directory exporter)", 44),
+    ts("L2 placements per server",
+       [('sum by (server) (lmcache_directory_placements{tier="l2"})', "{{server}}")],
+       "short", 0, 45, overrides=SERVER_OVERRIDES,
+       desc="KV blocks each server holds in L2, counted from the coordinator's "
+            "key directory. The coordinator's own metrics only give this "
+            "fleet-wide; the exporter derives the per-server split by listing "
+            "the directory."),
+    ts("L2 logical bytes per server",
+       [('sum by (server) (lmcache_directory_placement_bytes{tier="l2"})', "{{server}}")],
+       "bytes", 12, 45, overrides=SERVER_OVERRIDES,
+       desc="Bytes the directory attributes to each server's L2. Logical: under "
+            "the dedup adapter the disk holds far less."),
+    ts("L2 blocks by age",
+       [('sum by (age) (lmcache_directory_placements_by_age{tier="l2"})', "{{age}}")],
+       "short", 0, 53, stacked=True, fill=70, overrides=AGE_OVERRIDES,
+       desc="How long each L2 block has existed, fleet-wide. Age is measured "
+            "from when the exporter first saw the block, so blocks that predate "
+            "the exporter start young and an exporter restart resets ages."),
+    ts("L1 blocks by age",
+       [('sum by (age) (lmcache_directory_placements_by_age{tier="l1"})', "{{age}}")],
+       "short", 12, 53, stacked=True, fill=70, overrides=AGE_OVERRIDES,
+       desc="How long blocks currently in L1 have been there. With a small L1 "
+            "under constant eviction this stays young; old L1 blocks mean the "
+            "tier has stopped turning over."),
+    ts("Oldest L2 block per server",
+       [('lmcache_directory_oldest_placement_age_seconds{tier="l2"}', "{{server}}")],
+       "s", 0, 61, overrides=SERVER_OVERRIDES,
+       desc="Age of the longest-lived block in each server's L2. A steadily "
+            "climbing line means nothing is being evicted from L2."),
+    ts("Keys by number of servers holding them",
+       [('lmcache_directory_keys_by_replicas{replicas="1"}', "1 server"),
+        ('lmcache_directory_keys_by_replicas{replicas="2"}', "2 servers"),
+        ('lmcache_directory_keys_by_replicas{replicas="3+"}', "3+ servers")],
+       "short", 12, 61, stacked=True, fill=60, overrides=REPLICA_OVERRIDES,
+       desc="Replication across the fleet. Keys held by one server are unique "
+            "to it; keys held by several come from overlapping stimulator "
+            "windows."),
+    ts("Block churn per minute",
+       [('sum by (tier) (rate(lmcache_directory_placements_added_total[2m])) * 60',
+         "{{tier}} added"),
+        ('sum by (tier) (rate(lmcache_directory_placements_removed_total[2m])) * 60',
+         "{{tier}} removed")],
+       "short", 0, 69, overrides=CHURN_OVERRIDES,
+       desc="Blocks entering and leaving each tier, as seen between directory "
+            "polls. A block that appears and disappears between two polls is "
+            "not counted."),
+    ts("Keys by access count",
+       [("sum by (accesses) (lmcache_directory_keys_by_access_count)", "{{accesses}}")],
+       "short", 12, 69, stacked=True, fill=70, overrides=ACCESS_OVERRIDES,
+       desc="How often the coordinator reports each key as accessed."),
 ]
 
 dash = {

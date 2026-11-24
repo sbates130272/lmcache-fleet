@@ -155,6 +155,10 @@ GRAFANA_IMAGE = os.environ.get("GRAFANA_IMAGE", "grafana/grafana:latest")
 SCRAPE_INTERVAL = os.environ.get("SCRAPE_INTERVAL", "5s")
 PROM_RETENTION = os.environ.get("PROM_RETENTION", "6h")
 GRAFANA_PORTS = os.environ.get("GRAFANA_PORTS", "3000-3010")
+# Directory exporter: polls the coordinator's key directory and publishes
+# per-server inventory, placement age, replication and churn.
+EXPORTER_IMAGE = os.environ.get("EXPORTER_IMAGE", "python:3-alpine")
+DIRECTORY_POLL = os.environ.get("DIRECTORY_POLL", "15")
 
 # KV shape for bench: (n_kv,n_blocks,tokens_per_block,n_heads,head_dim):dtype:n_layers
 # Sized small — this host has ~4 GB spare RAM. Each bench client allocates
@@ -260,6 +264,16 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time={PROM_RETENTION}
 
+  directory-exporter:
+    image: {EXPORTER_IMAGE}
+    hostname: directory-exporter
+{RUN_AS}      COORDINATOR_URL: http://coordinator:9300
+      POLL_INTERVAL: "{DIRECTORY_POLL}"
+    networks: [fleet]
+    volumes:
+      - ./monitoring/exporter:/exporter:ro
+    command: ["python", "-u", "/exporter/directory_exporter.py"]
+
   grafana:
     image: {GRAFANA_IMAGE}
     hostname: grafana
@@ -308,6 +322,13 @@ scrape_configs:
         labels:
           component: "coordinator"
 
+  - job_name: "lmcache-directory"
+    scrape_interval: {DIRECTORY_POLL}s
+    static_configs:
+      - targets: ["directory-exporter:9105"]
+        labels:
+          component: "directory-exporter"
+
   - job_name: "lmcache-servers"
     metrics_path: /metrics
     static_configs:
@@ -335,7 +356,7 @@ with open(out, "w") as f:
 print(f"wrote {out} ({NUM_SERVERS} servers, coordinator, stimulators, "
       f"prometheus + grafana; SEQ={SEQS})")
 print(f"wrote {os.path.join(mon, 'prometheus.yml')} "
-      f"({NUM_SERVERS + 1} scrape targets)")
+      f"({NUM_SERVERS + 2} scrape targets)")
 
 # Key-space summary: what each stimulator drew, and how much the fleet covers.
 covered = set()

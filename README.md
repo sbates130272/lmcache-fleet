@@ -86,14 +86,26 @@ interchangeable:
   watermark, L2 bytes, and write/eviction rates, each split by server. This comes
   from the servers' own metrics, labelled `server` by the scrape config.
 
+- *Directory inventory* — a small sidecar,
+  [monitoring/exporter/directory_exporter.py](monitoring/exporter/directory_exporter.py),
+  polls the coordinator's `GET /directory/keys` every `DIRECTORY_POLL` seconds
+  and publishes `lmcache_directory_*` metrics. These feed the dashboard's lower
+  section: L2 blocks and logical bytes **per server**, blocks by age, the oldest
+  block per server, how many servers hold each key, churn per minute, and keys
+  by access count.
+
+Block age is measured by the exporter, not by LMCache: the directory carries no
+timestamps, so a block's age is the time since the exporter first saw it. Blocks
+that predate the exporter start at zero, and restarting it resets every age.
+
 The two L1 panels are deliberately redundant: one reads the coordinator's event-
 sourced directory, the other reads the servers directly. They should agree, and
 a divergence means a directory consumer has drifted from what the fleet holds.
 
-**L2 has no per-server view at any layer.** `key_directory_placements` and
-`placement_bytes` carry only a `tier` label — on `main` as well as v0.5.8 — so
-the coordinator cannot attribute L2 to a server, and the fs adapter reports
-nothing (see gotchas). L1 is the only tier with a per-server breakdown.
+The coordinator's own *metrics* have no per-server view of L2:
+`key_directory_placements` and `placement_bytes` carry only a `tier` label, on
+`main` as well as v0.5.8. The per-server L2 numbers therefore come from the
+directory exporter, which reads them from the directory listing instead.
 
 ## What you should see
 
@@ -128,6 +140,7 @@ plus real `.data` files under `data/l2-server-*/`.
 | COMPOSE_PROJECT_NAME | lmcache-fleet-demo | scopes the network and container names |
 | GRAFANA_PORTS | 3000-3010 | host port range Grafana may bind |
 | SCRAPE_INTERVAL | 5s | Prometheus scrape interval |
+| DIRECTORY_POLL | 15 | seconds between directory exporter polls |
 | PROM_RETENTION | 6h | how long metric history is kept |
 | SEQ | 6 | distinct synthetic sequences per stimulator |
 | NUM_TOKENS | 512 | tokens per store request (multiple of CHUNK_SIZE) |
