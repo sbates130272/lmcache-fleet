@@ -1,0 +1,28 @@
+name: lmcache-fleet - Shell Check
+
+# No push: trigger and no paths: filter. Every commit reaches main through a PR
+# merge, so a post-merge run would re-test a tree this already passed on. And a
+# required check that is path-filtered never reports at all on a PR outside the
+# filter, which leaves that PR blocked on a status that will never arrive.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shell-check:
+    name: lmcache-fleet - Shell Check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      # Default severity, not -S error: the tree is clean at every level today,
+      # so there is nothing to buy by lowering the bar now.
+      - name: Run ShellCheck
+        run: shellcheck scripts/*.sh

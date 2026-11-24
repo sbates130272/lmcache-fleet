@@ -1,0 +1,15 @@
+# Both ignores are deliberate properties of docker/Dockerfile, not debt.
+#
+# DL3059 (consolidate consecutive RUN) would merge the torch install into the
+# dependency install. Torch is the slow, rarely-changing layer and the
+# dependency list is the one that churns; merging them means every dependency
+# edit re-downloads torch. The extra layers are the point.
+#
+# DL3013 (pin pip versions) is already followed where it matters: torch,
+# lmcache, and every dependency whose version is load-bearing carry explicit
+# constraints. The rest are deliberately unpinned because they mirror
+# lmcache's own dependency ranges -- pinning them here would silently diverge
+# from what the wheel actually requires.
+ignored:
+  - DL3059
+  - DL3013

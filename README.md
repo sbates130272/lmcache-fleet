@@ -1,5 +1,19 @@
 # LMCache Fleet
 
+<!-- The smoke-test lane runs on push to main as well as on PRs, so its badge
+     is pinned with ?branch=main. The three lint lanes are PR-only: they have
+     no push-to-main and no cron trigger, so they have no run on main at all,
+     and shields renders "no status" for a pinned badge. -->
+[![Smoke Test](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-smoke-test.yml?branch=main&label=smoke-test&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-smoke-test.yml)
+[![Docker Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-docker-lint.yml?label=docker-lint&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-docker-lint.yml)
+[![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
+[![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
+
+[![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?style=flat-square)](LICENSE)
+[![LMCache](https://img.shields.io/badge/LMCache-v0.5.8-blue?style=flat-square)](https://github.com/LMCache/LMCache/releases/tag/v0.5.8)
+[![Image](https://img.shields.io/badge/CPU%20image-1.67%20GB-brightgreen?style=flat-square&logo=docker&logoColor=white)](docker/Dockerfile)
+[![Last Commit](https://img.shields.io/github/last-commit/sbates130272/lmcache-fleet?style=flat-square)](https://github.com/sbates130272/lmcache-fleet/commits/main)
+
 This repository contains the tools needed to generate and deploy a
 programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
 one coordinator building the fleet-wide key directory, and per-server one-shot
@@ -13,7 +27,9 @@ directory tracks both placements.
 make up NUM=4 SEQ=20            # generate, start fleet + prometheus + grafana, print the URL
 make stim NUM=4 SEQ=20          # make stores
 make report NUM=4               # directory: per-instance L1/L2 placements
+make check NUM=4                # same directory, as a pass/fail assertion
 make dash                       # Grafana URL (compose picks a free host port)
+make shot SHOT=grafana.png      # screenshot the dashboard (needs playwright)
 ```
 
 The compose file is generated into `docker/`, so plain `docker compose ...` from
@@ -23,8 +39,9 @@ make targets pass `-f` themselves.
 ## Layout
 
 ```
+.github/     CI: one smoke-test lane that runs a real fleet, three lint lanes
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
-scripts/     gen_compose.py (writes the compose file), report.sh
+scripts/     gen_compose.py (writes the compose file), report.sh, check_fleet.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
@@ -181,6 +198,41 @@ unique keys tracked: 80
 ```
 
 plus real `.data` files under `data/l2-server-*/`.
+
+`make check` reports the same directory as a pass/fail assertion instead of a
+listing: every server registered, keys tracked, and *each* server holding both
+L1 and L2 placements. The per-server split is the part worth asserting — a
+fleet where one server absorbed every store still shows healthy totals.
+
+## Continuous Integration
+
+Four lanes, all on GitHub-hosted `ubuntu-24.04`. Three are cheap PR gates —
+codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, and hadolint
+plus `docker compose config` on the Dockerfile and the *generated* compose file
+(both the stock and `L2_DEDUP=1` variants, since dedup takes a different branch
+in the generator).
+
+The fourth, `lmcache-fleet - Smoke Test`, runs a real two-server fleet on a
+GitHub runner in roughly two minutes:
+
+```bash
+L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=40
+```
+
+Three things make that fit. The slim CPU-only image is **built** in-workflow
+with a buildx `type=gha` cache rather than pulling the 14.8 GB published one —
+about 40s on a warm cache, and it means the Dockerfile is continuously tested.
+`L1_GB=0.05` makes 40 sequences overflow L1, so the run exercises the eviction
+and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
+L2 through the sim adapter, so the spill costs ~1 MB per server instead of
+~81 MB — the runner's disk never becomes the constraint.
+
+The lane then asserts on the key directory with `make check` and uploads a
+screenshot of the live Grafana dashboard as a build artifact. That artifact is
+the only evidence that the whole monitoring chain worked: Prometheus scraped
+the exporter, the exporter read the coordinator, and the panels rendered it. A
+green check cannot show that; the image can. On failure it uploads fleet logs
+and a container listing instead.
 
 ## Tunables (Environment Variables)
 

@@ -5,6 +5,9 @@ data/
 docker/docker-compose.yml
 monitoring/prometheus.yml
 
+# Dashboard screenshots from `make shot` (CI uploads them as artifacts)
+*.png
+
 # pycache directories
 **/__pycache__/
 

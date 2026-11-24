@@ -1,0 +1,124 @@
+name: lmcache-fleet - Smoke Test
+
+# Runs on main as well as on PRs, for two reasons: the README badge is pinned
+# with ?branch=main and needs a run there to report, and the buildx cache is
+# scoped per branch with a fallback to the default branch -- so a main run is
+# what populates the cache every PR then reads.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The verified recipe from the README: 2 servers, an L1 small enough that 40
+  # sequences overflow it, and dedup on so the L2 spill costs ~1 MB per server
+  # instead of ~81 MB. Both tiers end up populated, which is what makes this a
+  # fleet test rather than a start-up test.
+  NUM: 2
+  SEQ: 40
+  L1_GB: 0.05
+  L2_DEDUP: 1
+  LMCACHE_IMAGE: lmcache-fleet-demo/lmcache:0.5.8-cpu
+  # The 15s default needs two polls, and therefore half a minute, before the
+  # directory-exporter panels have a line to draw. The screenshot is taken off
+  # a fleet about a minute old, so poll faster rather than wait for it.
+  DIRECTORY_POLL: 5
+
+jobs:
+  smoke-test:
+    name: lmcache-fleet - Smoke Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The published lmcache/standalone is ~14.8 GB of CUDA toolchain for a
+      # fleet that never touches a GPU; it would not pull inside this job's
+      # budget, let alone run. docker/Dockerfile builds the 1.67 GB CPU-only
+      # equivalent, and building it here means the Dockerfile is continuously
+      # tested rather than only when someone remembers to.
+      - name: Build the slim CPU-only image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: ${{ env.LMCACHE_IMAGE }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install playwright chromium
+        run: |
+          pip install --quiet playwright
+          playwright install --with-deps chromium
+
+      # make run = gen + up + stim: the compose file comes from the generator,
+      # the same path a local run takes. The stimulators are one-shot and wait
+      # on the servers' healthchecks themselves.
+      - name: Start the fleet and run the stimulators
+        run: make run NUM=$NUM SEQ=$SEQ
+
+      # Resolved through compose rather than by guessing the generated
+      # <project>-<service>-1 container name, which the generator is free to
+      # change.
+      - name: Wait for the stimulators to finish
+        run: |
+          for i in $(seq 1 "$NUM"); do
+            cid=$(docker compose -f docker/docker-compose.yml --profile stim ps -aq "stim-$i")
+            if [ -z "$cid" ]; then echo "stim-$i never started" >&2; exit 1; fi
+            status=$(docker wait "$cid")
+            echo "stim-$i exited $status"
+            [ "$status" = "0" ] || exit 1
+          done
+
+      - name: Check the key directory
+        run: make check NUM=$NUM
+
+      - name: Report
+        run: make report NUM=$NUM
+
+      # Proof the monitoring half of the stack works end to end: Prometheus
+      # scraped the exporter, the exporter read the coordinator, and the
+      # dashboard rendered it. A green check cannot show that; the image can.
+      - name: Screenshot the Grafana dashboard
+        run: make shot SHOT=grafana.png SETTLE=20
+
+      - name: Upload the dashboard screenshot
+        uses: actions/upload-artifact@v6
+        with:
+          name: grafana-dashboard
+          path: grafana.png
+          if-no-files-found: error
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml --profile stim logs --no-color --tail=200 > fleet-logs.txt 2>&1 || true
+          docker compose -f docker/docker-compose.yml ps --all >> fleet-logs.txt 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fleet-logs
+          path: fleet-logs.txt
+          if-no-files-found: ignore
+
+      # Tolerant on purpose: if the image build failed there is no generated
+      # compose file to tear down, and a teardown error on top of the real
+      # failure only buries it.
+      - name: Tear down
+        if: always()
+        run: make clean NUM=$NUM || true
