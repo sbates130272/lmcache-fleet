@@ -531,7 +531,15 @@ for i in range(1, NUM_SERVERS + 1):
 """)
 
     # Everything a client of server i needs, whichever operation it runs.
+    # The PID namespace is shared for the same reason the IPC one is, and the
+    # two go together. LMCache names each client's POSIX SHM segment
+    # /lmcache_kv_<pid>_<counter>, and a container's main process is always
+    # pid 1 -- so a store and a restore sharing the server's IPC namespace both
+    # ask for /lmcache_kv_1_0 and the second one dies with EEXIST. Sharing the
+    # server's PID namespace gives every client a distinct pid, and therefore a
+    # distinct segment name, however many of them there are.
     _client = f"""{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so the client's CPU SHM path reaches the server
+    pid: service:{name}          # distinct pids, so the clients' SHM names cannot collide
     shm_size: {SHM_SIZE}
     networks: [fleet]
     volumes:
@@ -540,7 +548,7 @@ for i in range(1, NUM_SERVERS + 1):
       {name}:
         condition: service_healthy
     command: >
-      /opt/venv/bin/python {_SCRIPTS_MOUNT}/stim.py
+      /opt/venv/bin/python -u {_SCRIPTS_MOUNT}/stim.py
       --rpc-url tcp://{name}:5555
       --url {STIM_URL or f"http://{name}:8080"}
       --mode cpu --transfer-mode lmcache_driven

@@ -169,7 +169,7 @@ panels = [
             "target_info to recover the friendly name. A sudden drop to 0 is a "
             "fence, not an eviction. Cross-check against the panel on the right: "
             "they come from independent sources and should agree."),
-    ts("Resident L1 Chunks per Server — Servers' Own View",
+    ts("L1 Keys per Server — Servers' Own View",
        [('lmcache_mp_l1_write_chunks_total{server=~"$server"} - lmcache_mp_l1_evicted_chunks_total{server=~"$server"}',
          "{{server}}")],
        "short", 12, 12, overrides=SERVER_OVERRIDES,

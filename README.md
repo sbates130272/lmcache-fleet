@@ -1,25 +1,31 @@
 # LMCache Fleet
 
-<!-- The smoke-test lane runs on push to main as well as on PRs, so its badge
-     is pinned with ?branch=main. The three lint lanes are PR-only: they have
-     no push-to-main and no cron trigger, so they have no run on main at all,
-     and shields renders "no status" for a pinned badge. -->
+<!-- Every CI lane, in one row. Smoke Test and Released Check run on push to
+     main (Released Check also on a weekly schedule), so both are pinned with
+     ?branch=main. The lint lanes are PR-only: they have no push-to-main and no
+     cron trigger, so they have no run on main at all, and shields renders
+     "no status" for a pinned badge.
+
+     The lowercase "passing" is shields', not a typo: for a dynamic badge the
+     message comes from the upstream API and shields has no case option --
+     messageCase, textCase, upperCase and an explicit message= are all ignored.
+     Capitalising it would mean an endpoint badge fed by JSON we publish, which
+     would then only refresh when a lane runs, and a stale "Passing" over a
+     broken lane is worse than a lowercase honest one. -->
 [![Smoke Test](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-smoke-test.yml?branch=main&label=smoke-test&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-smoke-test.yml)
 [![Docker Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-docker-lint.yml?label=docker-lint&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-docker-lint.yml)
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
 [![Package Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-package-check.yml?label=package-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-package-check.yml)
-<!-- Released Check runs weekly on a schedule and on main, so it is pinned to
-     main like smoke-test. It reports on the plugin as published, which is why
-     it sits next to the PyPI version badge rather than with the lint lanes. -->
 [![Released Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-released-check.yml?branch=main&label=released-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-released-check.yml)
-[![PyPI](https://img.shields.io/pypi/v/lmcache-l2-sim?style=flat-square&label=lmcache-l2-sim&color=blue)](https://pypi.org/project/lmcache-l2-sim/)
 
-<!-- Not a workflow status: it links to the dashboard the smoke-test lane
-     screenshotted on its last run on main, republished to gh-pages because
-     an artifact URL is per-run and expires. Static label on purpose — the
-     smoke-test badge above already reports whether that run passed. -->
+<!-- What the fleet produces, rather than whether CI is green: the dashboard
+     the smoke-test lane screenshotted on its last run on main, republished to
+     gh-pages because an artifact URL is per-run and expires, and the plugin as
+     published. The Grafana label is static on purpose — the smoke-test badge
+     above already reports whether that run passed. -->
 [![Live Dashboard](https://img.shields.io/badge/Live%20Dashboard-Grafana-orange?style=flat-square&logo=grafana&logoColor=white)](https://sbates130272.github.io/lmcache-fleet/)
+[![PyPI](https://img.shields.io/pypi/v/lmcache-l2-sim?style=flat-square&label=lmcache-l2-sim&color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/lmcache-l2-sim/)
 
 [![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?label=License&style=flat-square)](LICENSE)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8-blue?style=flat-square)](https://github.com/LMCache/LMCache/releases/tag/v0.5.8)

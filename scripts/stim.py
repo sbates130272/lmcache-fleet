@@ -63,9 +63,26 @@ def run(client, args, log):
          "chunks_retrieved": 0, "full_hits": 0, "full_misses": 0, "errors": 0}
     lat = {"lookup": [], "store": [], "retrieve": []}
 
-    for n, seq in enumerate(sequences(args)):
+    plan = sequences(args)
+    started = time.monotonic()
+    # Without this a long run is silent until it exits, since the per-request
+    # logging the bench client does is suppressed: `make logs` on an hour-long
+    # store would show nothing at all. Emitted on a timer rather than every N
+    # requests so the cadence does not change with the request rate.
+    next_progress = started + args.progress_every if args.progress_every else None
+
+    for n, seq in enumerate(plan):
         if n:
             time.sleep(args.interval)
+        if next_progress is not None and time.monotonic() >= next_progress:
+            elapsed = time.monotonic() - started
+            rate = t["chunks_hit"] / t["chunks_requested"] if t["chunks_requested"] else 0.0
+            moved = (t["chunks_stored"] if args.op == "store" else t["chunks_retrieved"])
+            log(f"{args.op} {n}/{len(plan)} requests, {moved} chunks "
+                f"{'stored' if args.op == 'store' else 'retrieved'}, "
+                f"hit {rate:.0%}, {n / elapsed:.1f} req/s"
+                + (f", {t['errors']} errors" if t["errors"] else ""))
+            next_progress = time.monotonic() + args.progress_every
         request = client.create_request(
             seq, request_id=f"{args.op}-{seq}-{n}", request_kind=args.op,
             token_ids=_build_token_ids(seq, args.num_tokens))
@@ -116,6 +133,9 @@ def main():
     ap.add_argument("--min-hit-rate", type=float, default=0.0,
                     help="restore only: exit non-zero if fewer than this fraction "
                          "of the chunks asked for were found")
+    ap.add_argument("--progress-every", type=float, default=15,
+                    help="seconds between progress lines; 0 to print only the "
+                         "final summary")
     ap.add_argument("--client-index", type=int, default=0,
                     help="distinct per client talking to one server at the same "
                          "time: each index registers its own block of worker ids")

@@ -177,8 +177,11 @@ shot: ## Screenshot the Grafana dashboard to SHOT (needs playwright chromium)
 	python3 scripts/grafana_shot.py "http://localhost:$$port" -o $(SHOT) \
 		--settle $(SETTLE) --window $(WINDOW)
 
-logs: ## Follow logs from every service
-	$(COMPOSE) logs -f --tail=100
+# Both profiles named explicitly: a service behind a profile is invisible to
+# `compose logs` unless its profile is active, so the plain form silently
+# omitted the stimulators -- the one place a run's own summary line is printed.
+logs: ## Follow logs from every service, stimulators included
+	$(COMPOSE) --profile stim --profile restore logs -f --tail=100
 
 ##@ Teardown
 

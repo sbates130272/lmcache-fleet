@@ -724,7 +724,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Resident L1 Chunks per Server \u2014 Servers' Own View",
+      "title": "L1 Keys per Server \u2014 Servers' Own View",
       "description": "Chunks written to L1 minus chunks evicted from it, straight from each server. Independent of the coordinator's event stream, so a disagreement with the panel on the left means a directory consumer has drifted from what the servers actually hold.",
       "datasource": {
         "type": "prometheus",
