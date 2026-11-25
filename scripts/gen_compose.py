@@ -77,6 +77,9 @@ ENV_DOCS = {
     "SCRAPE_INTERVAL": ("Monitoring", "Prometheus scrape interval"),
     "PROM_RETENTION": ("Monitoring", "how long metric history is kept"),
     "GRAFANA_PORTS": ("Monitoring", "host port range Grafana may bind"),
+    "GRAFANA_LOG_LEVEL": ("Monitoring", "Grafana log level: debug, info, warn or error"),
+    "QUIET_ACCESS_LOG": ("Monitoring", "1 = drop uvicorn access lines for polled paths"),
+    "QUIET_ACCESS_PATHS": ("Monitoring", "comma-separated path prefixes treated as polled"),
     "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
     "DIRECTORY_POLL": ("Monitoring", "seconds between directory exporter polls"),
 
@@ -384,7 +387,28 @@ PLUGIN_DIRS = sorted(
 ) if os.path.isdir(_plugins_dir) else []
 PLUGIN_PYTHONPATH = ":".join(f"{_PLUGIN_MOUNT}/{name}" for name in PLUGIN_DIRS)
 
-L2_ENV = f"      PYTHONPATH: {PLUGIN_PYTHONPATH}\n" if L2_PLUGIN else ""
+# Prometheus scrapes /metrics, compose probes /healthcheck, the servers
+# heartbeat and the exporter pages /directory/keys -- every few seconds, each
+# logged by uvicorn at INFO. On a small fleet that is ~150 lines a minute
+# saying nothing, and the coordinator is the worst of it. LMCache hardcodes
+# access_log=True with no flag to turn it down, so docker/quiet/sitecustomize.py
+# goes on PYTHONPATH instead: Python imports a module of that name at startup,
+# early enough to attach a filter to the access logger. It drops only polled
+# paths that returned under 400, so a failing healthcheck still prints.
+QUIET_ACCESS_LOG = os.environ.get("QUIET_ACCESS_LOG", "1")
+_QUIET_MOUNT = "/opt/lmcache-fleet/quiet"
+_PYTHONPATH = ([_QUIET_MOUNT] if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else []) \
+    + ([PLUGIN_PYTHONPATH] if L2_PLUGIN else [])
+# Mounted on every lmcache container; only the HTTP servers have an access log
+# to quieten, but the path has to exist wherever PYTHONPATH names it.
+QUIET_MOUNT = (f"      - ../docker/quiet:{_QUIET_MOUNT}:ro      # access-log filter\n"
+               if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else "")
+PY_ENV = f"      PYTHONPATH: {':'.join(_PYTHONPATH)}\n" if _PYTHONPATH else ""
+COORD_VOLUMES = f"    volumes:\n{QUIET_MOUNT}" if QUIET_MOUNT else ""
+# The coordinator loads no plugins, so it gets the quiet path only rather than
+# a PYTHONPATH naming a plugins mount it does not have.
+COORD_ENV = f"      PYTHONPATH: {_QUIET_MOUNT}\n" if QUIET_MOUNT else ""
+L2_ENV = PY_ENV
 L2_PLUGIN_MOUNT = (f"      - ../plugins:{_PLUGIN_MOUNT}:ro           # out-of-tree L2 adapters\n"
                    if L2_PLUGIN else "")
 if L2_PLUGIN and not PLUGIN_DIRS:
@@ -402,6 +426,7 @@ GRAFANA_IMAGE = os.environ.get("GRAFANA_IMAGE", "grafana/grafana:latest")
 SCRAPE_INTERVAL = os.environ.get("SCRAPE_INTERVAL", "5s")
 PROM_RETENTION = os.environ.get("PROM_RETENTION", "6h")
 GRAFANA_PORTS = os.environ.get("GRAFANA_PORTS", "3000-3010")
+GRAFANA_LOG_LEVEL = os.environ.get("GRAFANA_LOG_LEVEL", "warn")
 # Set GRAFANA_PORT to pin one exactly; otherwise a port is chosen from the
 # range below and written into the compose file as a fixed mapping.
 GRAFANA_PORT = os.environ.get("GRAFANA_PORT")
@@ -508,7 +533,7 @@ for i in range(1, NUM_SERVERS + 1):
       - "127.0.0.1:{HTTP_BASE + i - 1}:8080"   # HTTP API on host for /status, /cache/objects
     volumes:
       - ../data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
-{L2_PLUGIN_MOUNT}    healthcheck:
+{L2_PLUGIN_MOUNT}{QUIET_MOUNT}    healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck',timeout=2)"]
       interval: 5s
@@ -545,6 +570,7 @@ for i in range(1, NUM_SERVERS + 1):
     networks: [fleet]
     volumes:
       - ../scripts:{_SCRIPTS_MOUNT}:ro
+{QUIET_MOUNT}
     depends_on:
       {name}:
         condition: service_healthy
@@ -587,8 +613,8 @@ services:
   coordinator:
     image: {IMAGE}
     hostname: coordinator
-{NO_ENTRYPOINT}{RUN_AS}    networks: [fleet]
-    ports:
+{NO_ENTRYPOINT}{RUN_AS}{COORD_ENV}    networks: [fleet]
+{COORD_VOLUMES}    ports:
       - "127.0.0.1:{COORD_PORT}:{COORD_NET_PORT}"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
@@ -636,6 +662,12 @@ services:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/lmcache-fleet.json
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Grafana's own chatter. warn hides the plugin-update and flag-evaluation
+      # INFO lines; the manifest watcher logs AT warn every poll about finding
+      # zero manifests, which is just what a provisioned-only install looks
+      # like, so that one logger is filtered to error.
+      GF_LOG_LEVEL: "{GRAFANA_LOG_LEVEL}"
+      GF_LOG_FILTERS: "search-manifest-watcher:error"
     networks: [fleet]
     depends_on: [prometheus]
     ports:
