@@ -10,9 +10,10 @@
 </style>
 <header>
   <strong>LMCache Fleet</strong> — Grafana dashboard from the last
-  <a href="https://github.com/sbates130272/lmcache-fleet/actions/runs/45501140016">smoke-test run</a>
-  on main (<code>0f350ba18e01483bb5569047fb482e0595b20409</code>): a 4-server fleet storing
-  200 sequences each, with L1 and L2 both populated. The dashboard
+  <a href="https://github.com/sbates130272/lmcache-fleet/actions/runs/45680152810">smoke-test run</a>
+  on main (<code>cbbff9a661db6aa8c1477e5aac4b0dbe56e78c18</code>): a 4-server fleet storing
+  200 sequences each into an L2 capped at 0.2 GiB per
+  server, so L1 spills to L2 and L2 evicts in turn. The dashboard
   covers the fleet's whole lifetime, about 3 minute(s).
 </header>
 <img src="grafana-dashboard.png" alt="LMCache fleet Grafana dashboard">
