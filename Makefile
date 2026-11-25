@@ -129,7 +129,7 @@ trace-analyze: image ## What an unbounded cache could reuse from TRACE, by routi
 	$(TRACE_PY) analyze /traces/$(TRACE) $(ANALYZE_ARGS)
 
 trace-report: image ## Hit rates of the last trace replay, per client and for the fleet
-	$(TRACE_PY) report /runs/$(or $(TRACE_RUN),latest)
+	$(TRACE_PY) report /runs/$(or $(TRACE_RUN),latest) $(REPORT_ARGS)
 
 ##@ Packaging
 

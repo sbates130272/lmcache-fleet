@@ -99,11 +99,13 @@ PY
 done
 
 echo
-echo "== L2 on disk (./data/l2-server-N) =="
+echo "== L2 on disk (./data/l2-server-N, ./data/l2-shared-N) =="
 here="$(cd "$(dirname "$0")/.." && pwd)"   # repo root, one level up from scripts/
-for i in $(seq 1 "$N"); do
-  d="$here/data/l2-server-$i"
-  [ -d "$d" ] || { echo "  server-$i: no $d"; continue; }
+# Each server's own L2, then whatever shared tiers exist (L2_SHARED). A shared
+# directory belongs to a group of servers, so it is listed once, not per server.
+for d in $(seq 1 "$N" | sed "s|^|$here/data/l2-server-|") "$here"/data/l2-shared-*; do
+  i="${d##*/l2-}"
+  [ -d "$d" ] || { case "$i" in shared-*) ;; *) echo "  $i: no $d" ;; esac; continue; }
   # Logical = what the server believes it stored: every .data name at its full
   # size, following links. On disk = blocks actually allocated, shared content
   # counted once.
@@ -114,7 +116,7 @@ for i in $(seq 1 "$N"); do
         END {
           split("B KiB MiB GiB TiB", u, " "); k = 1
           while (b >= 1024 && k < 5) { b /= 1024; k++ }
-          printf "  server-%s: %d files, %.1f %s logical, %s on disk%s\n", s, n, b, u[k], disk,
+          printf "  %s: %d files, %.1f %s logical, %s on disk%s\n", s, n, b, u[k], disk,
                  (canon > 0 ? sprintf(" (dedup: %d canonical)", canon) : "")
         }'
 done

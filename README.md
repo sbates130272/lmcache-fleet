@@ -65,7 +65,8 @@ make targets pass `-f` themselves.
 .github/     CI: one smoke-test lane that runs a real fleet, three lint lanes
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
 scripts/     gen_compose.py (writes the compose file), stim.py (the stimulator),
-             traces.py and tracelib.py (token traces), report.sh, check_fleet.py
+             traces.py and tracelib.py (token traces), report.sh, check_fleet.py,
+             check_tracelib.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter
@@ -528,8 +529,14 @@ Grafana's own.
 Eight lanes, all on GitHub-hosted `ubuntu-24.04`. Six are cheap PR gates —
 codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, hadolint
 plus `docker compose config` on the Dockerfile and the *generated* compose file
-(both the stock and `L2_CAPACITY_GIB` variants, since a capacity swaps the
-backing adapter), ruff and the Python lane below, and the packaging one after.
+(the stock, `L2_CAPACITY_GIB` and `L2_SHARED` variants, since a capacity swaps
+the backing adapter and a shared tier adds a second one), ruff and the Python
+lane below, and the packaging one after.
+
+The `L2_SHARED` variant asserts what would otherwise break without a sound:
+that the local tier is listed before the shared one, since a lookup takes the
+first adapter holding the key; that the shared one is marked shared; and that
+each server has its own temp directory in it.
 
 `lmcache-fleet - Ruff` lints every tracked `.py` against
 [ruff.toml](ruff.toml). Both the ruff version and the rule selection are
@@ -549,6 +556,12 @@ editing the builder without regenerating leaves it silently on the old panels
 with a clean-looking diff. The filter check matters for the same reason — a
 broken `sitecustomize.py` does not stop a container starting, so the smoke
 test would stay green while the logs quietly went back to being noisy.
+
+It also runs [scripts/check_tracelib.py](scripts/check_tracelib.py). Every
+`trace-N` computes the replay schedule and the routing on its own and keeps its
+share, so the fleet replays a trace exactly once only if both are deterministic
+and the shares partition it. When they are not, requests are sent twice or
+never and the run still exits 0 with a plausible hit rate.
 
 `lmcache-fleet - Package Check` runs `make dist` and `make publish-precheck`,
 then exercises both halves of the publish path without touching PyPI: it
@@ -606,17 +619,36 @@ inspected before merge. Runs on `main` additionally publish it to
 README badge can point at and what always shows the current dashboard. On
 failure the lane uploads fleet logs and a container listing instead.
 
+A second job in the same lane covers the other workload and the other
+topology — a token trace replayed against servers with a shared L2:
+
+```bash
+make trace-synth NAME=synth
+L2_DEDUP=1 L1_GIB=0.02 L2_SHARED=1 make up NUM=2
+L2_DEDUP=1 L1_GIB=0.02 L2_SHARED=1 TRACE=synth TRACE_ROUTE=request \
+  TRACE_SPEEDUP=20 TRACE_MIN_HIT_RATE=0.9 make trace NUM=2
+make trace-report REPORT_ARGS=--require-remote
+```
+
+It is a job of its own because `L2_SHARED` changes every server's definition,
+and compose would recreate the fleet the other legs are asserting on. The trace
+is synthetic and seeded, so it needs no download and its numbers repeat. With
+`TRACE_ROUTE=request` the most two servers can hit from local L2s alone is
+88.8%, and a run with the shared tier measures 93.4%, so the 0.9 floor fails
+unless the shared tier is serving blocks. `--require-remote` then asks for the
+direct evidence: a hit on a chunk the client never stored on its own server.
+
 ## Tunables (Environment Variables)
 
-The demo reads around forty environment variables. Rather than keep a table
+The demo reads around seventy-five environment variables. Rather than keep a table
 here that drifts from the code, ask for the list:
 
 ```bash
 make env-vars
 ```
 
-It prints them grouped — Fleet, Workload, L2 simulation, Monitoring, Runtime
-and the exporter's own — each with the default read straight out of the source,
+It prints them grouped — Fleet, Workload, Trace replay, L2 simulation, L2
+sharing, Monitoring, Runtime and the exporter's own — each with the default read straight out of the source,
 so the listing cannot fall out of step. A variable the code reads but nobody
 has described shows up under "undocumented" rather than going unmentioned.
 

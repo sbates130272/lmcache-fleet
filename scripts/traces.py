@@ -395,6 +395,8 @@ def cmd_report(args):
         fleet.update(tally)
         _report_row(os.path.basename(log)[:-6], tally)
     _report_row("fleet", fleet)
+    if args.require_remote and not fleet["hit_remote"]:
+        sys.exit("FAIL: no hit came from another server; the shared tier served nothing")
 
 
 def _report_row(name, t):
@@ -458,6 +460,8 @@ def main():
 
     p = sub.add_parser("report", help="merge a fleet run's per-request logs")
     p.add_argument("run", help="directory of trace-N.jsonl logs")
+    p.add_argument("--require-remote", action="store_true",
+                   help="exit non-zero unless some hit came from another server")
     p.set_defaults(func=cmd_report)
 
     args = ap.parse_args()
