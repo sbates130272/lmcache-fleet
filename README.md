@@ -119,6 +119,46 @@ checksum verification whenever dedup is on. Do not point a real model at it.
 See [plugins/README.md](plugins/README.md) for the full parameter list, using the
 adapter outside this demo, and the upstreaming note.
 
+## L2 Capacity and Eviction
+
+By default L2 grows without bound. `L2_CAPACITY_GB` gives each server an L2
+capacity, and LMCache then evicts from L2 once usage crosses a watermark:
+
+```bash
+L2_DEDUP=1 L1_GB=0.05 L2_CAPACITY_GB=0.1 make run NUM=2 SEQ=120
+```
+
+Each server stores 240 blocks (240 MiB logical) against 0.1 GB. Verified on
+that run: eviction fires 35 times per server, each ends holding 80 L2 blocks
+(78% of capacity), the coordinator's directory agrees at 80 L2 placements, and
+the exporter counts the other 160 as removed. `L2_EVICT_WATERMARK` (0.8),
+`L2_EVICT_RATIO` (0.2) and `L2_EVICT_POLICY` (`LRU` or `ARC`) tune it.
+
+Capacity is counted in **logical** bytes — what the server believes it stored.
+Under dedup that is the modelled size, not the megabyte of real disk, so a
+terabyte tier can be sized and filled on a laptop. Without dedup the same knob
+bounds real bytes: the run above ends at 81 MB on disk per server.
+
+Setting it changes three things in the generated `--l2-adapter` spec, and all
+three are needed. Get one wrong and nothing is evicted:
+
+- The backing adapter becomes `fs_native`. Plain `fs` declares no capacity, so
+  LMCache logs `does not support global eviction` and skips it.
+- `max_capacity_gb` goes on that backing spec.
+- The `eviction` block goes on the **outermost** spec. Inside the plugin's
+  `inner` it parses cleanly and is then ignored, with usage running straight
+  past the capacity and no warning from LMCache.
+
+Where to watch it: `make report` prints each server's usage against capacity
+(read from `/status` — the servers export L2 usage to Prometheus, but not the
+capacity or watermark). On the dashboard, "L2 Bytes per Server" flattens at the
+watermark instead of climbing, "Block Churn per Minute" grows an "L2 Removed"
+line, and "Oldest L2 Block per Server" stops rising.
+
+One gap: blocks left on disk by an earlier run of the same server are not
+counted towards its usage, so eviction never reclaims them. `make clean`
+between runs when capacity matters.
+
 ## Monitoring the Fleet
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the

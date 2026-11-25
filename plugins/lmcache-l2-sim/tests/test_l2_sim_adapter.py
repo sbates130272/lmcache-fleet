@@ -81,6 +81,41 @@ def test_config_parses_every_field(tmp_path):
     assert type(config.inner_config).__name__ == "FSL2AdapterConfig"
 
 
+def test_eviction_inside_inner_is_called_out(tmp_path, monkeypatch):
+    # First Party
+    from lmcache_l2_sim import l2_sim_adapter
+
+    notes = []
+    monkeypatch.setattr(l2_sim_adapter.logger, "info", lambda msg, *a: notes.append(msg))
+    eviction = {"eviction_policy": "LRU"}
+
+    L2SimAdapterConfig.from_dict({"inner": fs_spec(tmp_path)})
+    assert notes == []
+
+    config = L2SimAdapterConfig.from_dict({"inner": {**fs_spec(tmp_path), "eviction": eviction}})
+    assert len(notes) == 1 and "outermost" in notes[0]
+    # Still parsed, so an inner adapter that wants it for itself gets it.
+    assert config.inner_config.eviction_config.eviction_policy == "LRU"
+
+
+def test_capacity_and_eviction_come_from_the_inner(tmp_path):
+    """What L2 eviction needs from this adapter: the inner's declared capacity."""
+    capped = {"type": "fs_native", "base_path": str(tmp_path), "max_capacity_gb": 0.5}
+    adapter = L2SimAdapter(L2SimAdapterConfig.from_dict({"inner": capped}))
+    try:
+        assert adapter.supports_global_eviction is True
+        assert adapter.get_usage().total_capacity_bytes == int(0.5 * 1024**3)
+    finally:
+        adapter.close()
+
+    uncapped = L2SimAdapter(L2SimAdapterConfig.from_dict({"inner": fs_spec(tmp_path)}))
+    try:
+        # Plain fs declares no capacity, so LMCache skips it for eviction.
+        assert uncapped.supports_global_eviction is False
+    finally:
+        uncapped.close()
+
+
 def test_config_defaults(tmp_path):
     config = L2SimAdapterConfig.from_dict({"inner": fs_spec(tmp_path)})
     assert config.dedup is True

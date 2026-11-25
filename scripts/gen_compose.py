@@ -58,6 +58,10 @@ ENV_DOCS = {
     "L2_WRITE_DELAY_MS_PER_MB": ("L2 simulation", "store delay per MiB written"),
     "L2_READ_DELAY_MS_PER_MB": ("L2 simulation", "load delay per MiB read"),
     "L2_DELAY_JITTER": ("L2 simulation", "fractional jitter on L2 delays, 0 to 1"),
+    "L2_CAPACITY_GB": ("L2 simulation", "per-server L2 capacity in logical GB; 0 = unbounded, no eviction"),
+    "L2_EVICT_POLICY": ("L2 simulation", "L2 eviction policy once a capacity is set: LRU or ARC"),
+    "L2_EVICT_WATERMARK": ("L2 simulation", "L2 usage fraction that triggers eviction"),
+    "L2_EVICT_RATIO": ("L2 simulation", "fraction of L2 evicted each time it triggers"),
 
     "PROM_IMAGE": ("Monitoring", "Prometheus image"),
     "GRAFANA_IMAGE": ("Monitoring", "Grafana image"),
@@ -292,7 +296,44 @@ L2_DELAYS = {
     "delay_jitter": float(os.environ.get("L2_DELAY_JITTER", "0")),
 }
 L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
-_fs_spec = {"type": "fs", "base_path": "/data/l2"}
+
+# L2 eviction. Off by default: L2 grows without bound, as it always has here.
+# Setting L2_CAPACITY_GB turns it on, and three things have to change together
+# for LMCache to act on it -- get any one wrong and nothing is evicted:
+#   * the backing adapter becomes fs_native. Plain fs declares no capacity, so
+#     LMCache logs "does not support global eviction" and skips it.
+#   * max_capacity_gb goes on that backing spec. It is counted in logical
+#     bytes, so under dedup it bounds what the server believes it stored, not
+#     the near-zero disk actually used -- which is the point of modelling it.
+#   * the "eviction" block goes on the OUTERMOST spec, the one --l2-adapter
+#     parses. Inside the plugin's "inner" it is ignored without a warning.
+L2_CAPACITY_GB = float(os.environ.get("L2_CAPACITY_GB", "0"))
+L2_EVICT_POLICY = os.environ.get("L2_EVICT_POLICY", "LRU")
+L2_EVICT_WATERMARK = float(os.environ.get("L2_EVICT_WATERMARK", "0.8"))
+L2_EVICT_RATIO = float(os.environ.get("L2_EVICT_RATIO", "0.2"))
+if L2_CAPACITY_GB < 0:
+    sys.exit(f"L2_CAPACITY_GB={L2_CAPACITY_GB:g} must be >= 0 (0 disables L2 eviction)")
+if L2_CAPACITY_GB:
+    # IsolatedLRU evicts per cache_salt against coordinator quotas, not against
+    # this capacity, and noop never evicts: neither does what the knob says.
+    if L2_EVICT_POLICY not in ("LRU", "ARC"):
+        sys.exit(f"L2_EVICT_POLICY={L2_EVICT_POLICY!r} must be LRU or ARC")
+    if not 0 < L2_EVICT_WATERMARK <= 1:
+        sys.exit(f"L2_EVICT_WATERMARK={L2_EVICT_WATERMARK:g} must be in (0, 1]")
+    if not 0 < L2_EVICT_RATIO <= 1:
+        sys.exit(f"L2_EVICT_RATIO={L2_EVICT_RATIO:g} must be in (0, 1]")
+    L2_EVICTION = {"eviction": {"eviction_policy": L2_EVICT_POLICY,
+                                "trigger_watermark": L2_EVICT_WATERMARK,
+                                "eviction_ratio": L2_EVICT_RATIO}}
+    # The block is repeated on the backing spec even when the plugin wraps it.
+    # It does nothing there, but fs_native otherwise warns that the capacity
+    # "will NOT bound disk usage" because it sees none on its own spec -- a
+    # false alarm in every server log when the outer block is doing the work.
+    _fs_spec = {"type": "fs_native", "base_path": "/data/l2",
+                "max_capacity_gb": L2_CAPACITY_GB, **L2_EVICTION}
+else:
+    _fs_spec = {"type": "fs", "base_path": "/data/l2"}
+    L2_EVICTION = {}
 if L2_PLUGIN:
     L2_ADAPTER = {
         "type": "plugin",
@@ -305,6 +346,7 @@ if L2_PLUGIN:
             "seed": int(SEED) if SEED.lstrip("-").isdigit() else 0,
             **{k: v for k, v in L2_DELAYS.items() if v},
         },
+        **L2_EVICTION,
     }
 else:
     L2_ADAPTER = _fs_spec
@@ -622,8 +664,14 @@ print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
       f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")
 if L2_PLUGIN:
     _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
-    print(f"L2: fs wrapped by lmcache_l2_sim "
+    print(f"L2: {_fs_spec['type']} wrapped by lmcache_l2_sim "
           f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
           f"{' — L2 contents are fake, bench checksum verification off' if L2_DEDUP else ''}")
 else:
-    print("L2: fs (real bytes on disk)")
+    print(f"L2: {_fs_spec['type']} (real bytes on disk)")
+if L2_CAPACITY_GB:
+    print(f"L2 eviction: {L2_EVICT_POLICY} at {L2_EVICT_WATERMARK:.0%} of "
+          f"{L2_CAPACITY_GB:g} GB logical per server, "
+          f"evicting {L2_EVICT_RATIO:.0%} each time")
+else:
+    print("L2 eviction: off (L2_CAPACITY_GB=0), L2 grows without bound")

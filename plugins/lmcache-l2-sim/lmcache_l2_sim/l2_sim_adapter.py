@@ -178,6 +178,19 @@ class L2SimAdapterConfig(L2AdapterConfigBase):
         inner_config.eviction_config = cls._parse_eviction_config(inner)
         inner_config.persist_config = cls._parse_persist_config(inner)
         inner_config.serde_config = cls._parse_serde_config(inner)
+        if inner.get("eviction") is not None:
+            # LMCache builds its L2 eviction controller from the spec that
+            # --l2-adapter parses, which is the one wrapping this adapter, and
+            # never looks inside "inner". An eviction block only here parses
+            # cleanly and then does nothing, with usage running past the
+            # declared capacity. This config cannot see the outer spec, so it
+            # can only say where the block has to be.
+            logger.info(
+                "L2SimAdapter: the 'eviction' block inside 'inner' does not "
+                "enable L2 eviction on its own. LMCache reads it from the "
+                "outermost --l2-adapter spec, next to \"type\": \"plugin\"; "
+                "make sure it is there as well."
+            )
 
         dedup = d.get("dedup", True)
         if not isinstance(dedup, bool):

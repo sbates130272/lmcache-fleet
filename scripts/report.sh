@@ -53,6 +53,17 @@ blob = json.dumps(d)
 # surface any l1 usage/capacity-ish fields we can find
 found = re.findall(r'"((?:l1|used|capacity|resident)[^"]*)"\s*:\s*([0-9.]+)', blob, re.I)
 print(f"  server-{i}: " + (", ".join(f"{k}={v}" for k, v in found[:8]) if found else "ok (see /status)"))
+# L2 capacity is in /status and nowhere else: the servers export L2 usage to
+# Prometheus but not the capacity or watermark it is measured against.
+ctl = (d.get("storage_manager") or {}).get("l2_eviction_controller") or {}
+for a in ctl.get("adapters", []):
+    used, cap = a.get("total_bytes_used", 0), a.get("total_capacity_bytes", 0)
+    if cap:
+        print(f"    L2 eviction: {a.get('eviction_policy')} at "
+              f"{a.get('trigger_watermark', 0):.0%}, evicting {a.get('eviction_ratio', 0):.0%}; "
+              f"{used / 2**20:.0f} of {cap / 2**20:.0f} MiB logical ({used / cap:.0%})")
+if not ctl.get("adapters"):
+    print("    L2 eviction: off, L2 grows without bound")
 PY
 done
 
