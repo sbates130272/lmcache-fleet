@@ -17,7 +17,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help image gen up stim restore run dash targets report check shot test-plugins test-released dist publish-precheck publish down clean logs env-vars
+.PHONY: help image gen up stim restore trace trace-deps trace-synth trace-exgentic trace-analyze trace-report run dash targets report check shot test-plugins test-released dist publish-precheck publish down clean logs env-vars
 
 # One publishable distribution per plugins/<dir>/pyproject.toml, each built and
 # uploaded on its own. Discovered by wildcard rather than listed, so a new
@@ -57,6 +57,13 @@ stim: image gen ## Run the one-shot stimulators to store KV chunks
 restore: image gen ## Run the one-shot restore stimulators to fetch KV chunks back
 	$(COMPOSE) --profile restore up --detach $(shell seq 1 $(NUM) | sed 's/^/restore-/')
 
+# Replays a token trace instead of the synthetic windows: every trace-N computes
+# the same schedule and keeps the requests routed to its own server. Pass the
+# variables the fleet was started with, plus TRACE and any TRACE_* knobs.
+trace: image gen ## Replay the token trace TRACE (a directory under data/traces)
+	@test -n "$(TRACE)" || { echo "set TRACE=<dir under data/traces>, e.g. TRACE=synth"; exit 1; }
+	$(COMPOSE) --profile trace up --detach $(shell seq 1 $(NUM) | sed 's/^/trace-/')
+
 # `up` and `stim` stay separate so the stimulators can be re-run against a warm
 # fleet, or the fleet inspected before anything is stored. For a plain run,
 # this does both. The stimulators wait on the servers' healthchecks either way.
@@ -71,6 +78,58 @@ test-plugins: image ## Run the plugin test suites inside the lmcache image
 		--entrypoint "" --user "$(shell id -u):$(shell id -g)" \
 		$(LMCACHE_IMAGE) \
 		sh -c '/opt/venv/bin/python -m pytest /plugins/*/tests -q -p no:cacheprovider'
+
+##@ Traces
+
+# Everything here runs scripts/traces.py inside the lmcache image, which already
+# has transformers and tokenizers. Downloads (tokenizer files, pyarrow) land
+# under data/traces/cache, so they survive between runs and `make clean`.
+# HF_TOKEN is passed by name only: docker takes the value from the environment,
+# so it is never expanded into a command line that make echoes or `ps` shows.
+TRACE_PY = docker run --rm --entrypoint "" --user "$(shell id -u):$(shell id -g)" \
+	-e HOME=/tmp -e HF_HOME=/traces/cache/hf -e PYTHONPATH=/traces/cache/site \
+	-e HF_HUB_DISABLE_PROGRESS_BARS=1 -e HF_TOKEN \
+	-v "$(CURDIR)/data/traces:/traces" -v "$(CURDIR)/data/trace-runs:/runs" \
+	-v "$(CURDIR)/scripts:/scripts:ro" \
+	$(LMCACHE_IMAGE) /opt/venv/bin/python -u /scripts/traces.py
+EXGENTIC_URL := https://huggingface.co/datasets/Exgentic/agent-llm-traces-v2/resolve/main/data/train
+SHARDS ?= 0000
+SESSIONS ?= 12
+TOKENIZER ?= Qwen/Qwen2.5-7B-Instruct
+MAX_INPUT_TOKENS ?= 130000
+
+trace-deps: image ## Install pyarrow under data/traces/cache (only `trace-exgentic` needs it)
+	@mkdir -p data/traces/cache/site data/traces/cache/hf data/trace-runs
+	@test -d data/traces/cache/site/pyarrow || docker run --rm --entrypoint "" \
+		--user "$(shell id -u):$(shell id -g)" -e HOME=/tmp \
+		-v "$(CURDIR)/data/traces:/traces" $(LMCACHE_IMAGE) \
+		/opt/venv/bin/pip install -q --target /traces/cache/site pyarrow
+
+trace-synth: image ## Generate an artificial token trace into data/traces/NAME (SYNTH_ARGS=...)
+	@mkdir -p data/traces data/trace-runs
+	$(TRACE_PY) synth /traces/$(or $(NAME),synth) $(SYNTH_ARGS)
+
+# Real agent sessions with their text: Exgentic/agent-llm-traces-v2. Converted
+# to aiperf's mooncake_trace JSONL first, so the same file replays against a
+# real engine with `aiperf profile --custom-dataset-type mooncake_trace`, then
+# tokenized with the chat template of the model you would serve.
+trace-exgentic: trace-deps ## Download, convert and tokenize SESSIONS real agent sessions
+	@mkdir -p data/traces/raw/exgentic-v2
+	@for s in $(SHARDS); do f=data/traces/raw/exgentic-v2/$$s.parquet; \
+		test -f $$f || { echo "fetching $$s.parquet"; curl -fsSL -o $$f $(EXGENTIC_URL)/$$s.parquet || exit 1; }; done
+	$(TRACE_PY) convert /traces/raw/exgentic-v2 /traces/$(or $(NAME),exgentic) \
+		--sessions $(SESSIONS) --max-input-tokens $(MAX_INPUT_TOKENS) $(CONVERT_ARGS)
+	$(TRACE_PY) tokenize /traces/$(or $(NAME),exgentic) /traces/$(or $(NAME),exgentic)/tokens \
+		--tokenizer $(TOKENIZER)
+	@echo "replay it with: make trace TRACE=$(or $(NAME),exgentic)/tokens"
+
+trace-analyze: image ## What an unbounded cache could reuse from TRACE, by routing and sharing
+	@test -n "$(TRACE)" || { echo "set TRACE=<dir under data/traces>"; exit 1; }
+	@mkdir -p data/trace-runs
+	$(TRACE_PY) analyze /traces/$(TRACE) $(ANALYZE_ARGS)
+
+trace-report: image ## Hit rates of the last trace replay, per client and for the fleet
+	$(TRACE_PY) report /runs/$(or $(TRACE_RUN),latest)
 
 ##@ Packaging
 
@@ -181,16 +240,16 @@ shot: ## Screenshot the Grafana dashboard to SHOT (needs playwright chromium)
 # `compose logs` unless its profile is active, so the plain form silently
 # omitted the stimulators -- the one place a run's own summary line is printed.
 logs: ## Follow logs from every service, stimulators included
-	$(COMPOSE) --profile stim --profile restore logs -f --tail=100
+	$(COMPOSE) --profile stim --profile restore --profile trace logs -f --tail=100
 
 ##@ Teardown
 
 down: ## Stop and remove the fleet containers
-	$(COMPOSE) --profile stim --profile restore down --remove-orphans
+	$(COMPOSE) --profile stim --profile restore --profile trace down --remove-orphans
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"
-	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana ./data/exporter ./data/coordinator
+	rm -rf ./data/l2-server-* ./data/l2-shared-* ./data/prometheus ./data/grafana ./data/exporter ./data/coordinator
 
 ##@ Help
 

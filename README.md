@@ -48,6 +48,7 @@ placements.
 make up NUM=4 SEQ=20            # generate, start fleet + prometheus + grafana, print the URL
 make stim NUM=4 SEQ=20          # store KV blocks (stores only, nothing read back)
 make restore NUM=4 SEQ=20       # fetch blocks back, from L1 and through L2
+make trace NUM=4 TRACE=synth    # replay a token trace of agent sessions instead
 make report NUM=4               # directory: per-instance L1/L2 placements
 make check NUM=4                # same directory, as a pass/fail assertion
 make dash                       # Grafana URL (compose picks a free host port)
@@ -64,11 +65,11 @@ make targets pass `-f` themselves.
 .github/     CI: one smoke-test lane that runs a real fleet, three lint lanes
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
 scripts/     gen_compose.py (writes the compose file), stim.py (the stimulator),
-             report.sh, check_fleet.py
+             traces.py and tracelib.py (token traces), report.sh, check_fleet.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter
-             state, coordinator checkpoint
+             state, coordinator checkpoint; token traces and replay logs
 ```
 
 ## The Image
@@ -219,6 +220,139 @@ Tokens/Second by Tier" splits the hits by tier.
 
 Each server has its own L2 directory, so a restore only finds what *its*
 server stored: `restore-N` reads the window `stim-N` wrote.
+
+## Replaying Agent Traces
+
+The windows above are synthetic: every block is its own 512-token prompt, so
+nothing is reused that the stimulator did not ask for twice. `make trace`
+replays a **token trace** instead, where requests are whole prompts of real
+length, arriving when a session sent them, and reuse is whatever the sessions
+had in common.
+
+```bash
+make trace-synth NAME=synth                      # an artificial trace, or
+make trace-exgentic NAME=exgentic SESSIONS=12    # real agent sessions, tokenized
+make trace-analyze TRACE=exgentic/tokens         # what a perfect cache could reuse
+L2_DEDUP=1 L1_GIB=0.02 make up NUM=2
+L2_DEDUP=1 L1_GIB=0.02 TRACE=exgentic/tokens make trace NUM=2
+make trace-report                                # hit rates, per client and fleet
+```
+
+Each request is looked up, the prefix that hit is retrieved, and the rest is
+stored — what an engine does with a prompt. LMCache keys a chunk by a hash
+chained over every token before it, so two requests share chunks exactly as far
+as their prompts share a prefix; the stimulator only has to send the right
+tokens.
+
+**Where traces come from.** Published agent traces are mostly anonymised: the
+corpus aiperf's AgentX scenario replays carries block ids and timings, but no
+text. `trace-exgentic` uses one that keeps the text,
+[Exgentic/agent-llm-traces-v2](https://huggingface.co/datasets/Exgentic/agent-llm-traces-v2)
+(10,056 sessions, with messages, tool definitions and timestamps), in two steps:
+
+1. `traces.py convert` writes it as aiperf `mooncake_trace` JSONL — full
+   `messages` and `tools` per request. That file is the interchange: aiperf
+   replays the same one against a real engine with
+   `aiperf profile --custom-dataset-type mooncake_trace`, and any other corpus
+   converted to it tokenizes the same way.
+2. `traces.py tokenize` renders each request through the chat template of
+   `TOKENIZER` (default `Qwen/Qwen2.5-7B-Instruct`; use the model you would
+   serve) and writes the token trace. Requests are stored as deltas against the
+   previous one in their session, so 12 sessions of 110k-token prompts — 33.8M
+   prompt tokens — take 1.5M tokens on disk.
+
+`trace-synth` skips the text and writes a token trace directly: one system
+prompt every session shares, a context each group shares, turns that grow, and
+occasional compaction. `SYNTH_ARGS="--sessions 200 --groups 8"` and so on;
+`traces.py synth --help` lists them.
+
+**What it measures.** The stimulator remembers every chunk it stored, so a hit
+is attributed: to the same session, to another session on this server, or
+*remote* — a chunk this server never stored, which can only have come from a
+tier the servers share. A miss on a chunk it did store is *lost*: evicted
+since. The summary line adds two histograms, `hit_gap_s` and `lost_gap_s`: how
+long a chunk had sat since it was last touched when it hit, and when it was
+gone. One JSON line per request goes to `data/trace-runs/<TRACE_RUN>/`, which
+`make trace-report` totals.
+
+`trace-analyze` is the same accounting with no fleet: an unbounded cache, by
+routing and by whether the servers share a tier. It is the ceiling a run is
+measured against. The 12 real sessions above come out 99.0% reusable, and 77.7%
+of it from *another* session: every one opens with the same 110k tokens of
+tool definitions.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `TRACE` | | token trace to replay, a directory under `data/traces` |
+| `TRACE_ROUTE` | `session` | what stays on one server: a `session`, a `group` (sessions that share context), or nothing — `request` moves every request to the next server |
+| `TRACE_LANES` | `8` | sessions in flight across the fleet |
+| `TRACE_SPEEDUP` | `1` | divide the trace's timing by this |
+| `TRACE_IDLE_CAP` | `60` | longest gap kept between a session's requests, in trace seconds |
+| `TRACE_DURATION`, `TRACE_SESSIONS` | `0` | stop after this many replay seconds, or sessions |
+| `TRACE_SHAPE` | `(2,8192,16,1,8):float16:1` | KV shape for trace clients |
+
+The schedule is open-loop: it is computed from the trace alone, so every
+`trace-N` derives the same one and keeps the requests routed to its server.
+A client that cannot keep up does not slow the trace down; it falls behind, and
+`lag_ms_p50`/`p99` in its summary say by how much. Lower `TRACE_SPEEDUP` if
+they are large.
+
+`TRACE_SHAPE` is small on purpose. At the default `SHAPE_SPEC` a chunk is 1 MiB
+and a 110k-token prompt would be 430 MiB of KV; at the trace shape a chunk is
+8 KiB. Size `L1_GIB` and `L2_CAPACITY_GIB` against that. Its 8192 blocks of 16
+tokens bound a prompt at 131,072 tokens; longer ones are truncated and counted.
+
+## A Shared L2 Tier
+
+By default each server has its own L2 and a block is only ever found by the
+server that stored it. `L2_SHARED=1` adds a second tier that servers share:
+
+```bash
+L2_DEDUP=1 L2_SHARED=1 make up NUM=4                  # local L2, then one shared L2
+L2_DEDUP=1 L2_SHARED=1 SHARE_GROUPS=2 make up NUM=4   # two shared L2s, two servers each
+L2_DEDUP=1 L2_SHARED=only make up NUM=4               # the shared tier alone
+```
+
+LMCache takes `--l2-adapter` more than once. Every key is stored to every
+adapter, and a lookup is served by the first adapter, in the order given, that
+holds it. So this is not a cascade — nothing is demoted from one tier to the
+next. The local tier is listed first (a server's own NVMe) and the shared one
+second (`data/l2-shared-N`, mounted into every server of its group and marked
+`"shared": true`), so a block comes back from local disk when this server has
+it and from the shared tier when only another server stored it.
+
+`SHARE_GROUPS` is the knob for *how* shared: servers are dealt across that many
+shared directories, so `1` is the whole fleet sharing and `NUM` is nobody
+sharing. Measured on 4 servers with `TRACE_ROUTE=request`, the routing that
+gives a server no history of its own to lean on (40 synthetic sessions, 58,016
+chunks; `trace-analyze` puts the ceilings at 80.1% and 94.0%):
+
+| `SHARE_GROUPS` | fleet hit rate | hits from another server |
+| --- | --- | --- |
+| 4 (none share) | 80.1% | 0% |
+| 2 | 88.5% | 8.3% |
+| 1 (all share) | 93.6% | 13.5% |
+
+The gap to 94.0% is a race the model keeps: a block is written to L2 after it
+is in L1, so a request that reaches a second server a moment later misses it.
+
+The shared tier takes the same simulation as the local one: `L2_DEDUP` applies
+to both, and `L2_SHARED_READ_DELAY_MS`, `L2_SHARED_WRITE_DELAY_MS` and
+`L2_SHARED_CAPACITY_GIB` are its own latency and capacity. Three things to know:
+
+- **Capacity is per server.** Each server counts only the bytes it wrote, so
+  `L2_SHARED_CAPACITY_GIB` bounds each server's contribution, not the
+  directory. A block one server evicts is simply a miss for the others.
+- **Temp files.** Both fs adapters write `<key>.tmp` and rename it, so two
+  servers storing one block at once rename each other's file away and the
+  loser logs a `FileNotFoundError`. The generated spec gives each server its
+  own `relative_tmp_dir`, which avoids it; a hand-written shared spec needs the
+  same.
+- **The directory counts a shared block once**, under whichever server reported
+  it first. The exporter labels those placements `backend="...-shared"`, so the
+  shared tier is a separate series from each server's local L2. LMCache's own
+  per-server L2 metrics name an adapter by its type, so with two tiers of one
+  type they are a single series.
 
 ## Surviving a Coordinator Restart
 
