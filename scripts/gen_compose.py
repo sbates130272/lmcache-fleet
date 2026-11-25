@@ -3,9 +3,10 @@
   - 1 coordinator (fleet-wide key directory)
   - N MP servers  (each: L1 DRAM tier + L2 fs adapter, registers w/ coordinator,
                    reports cache events so the directory tracks L1/L2 placements)
-  - N stimulators (one-shot `lmcache bench server --mode cpu` containers that
-                   STORE synthetic KV chunks into their paired server; shares
-                   the server's IPC namespace so the CPU SHM path works)
+  - N stimulators (one-shot scripts/stim.py containers that STORE synthetic KV
+                   chunks into their paired server; shares the server's IPC
+                   namespace so the CPU SHM path works)
+  - N restorers   (the same script fetching chunks back, from L1 or via L2)
 
 Writes docker/docker-compose.yml and monitoring/prometheus.yml, both generated
 and both gitignored. Volume paths are relative to docker/, since that is where
@@ -37,7 +38,7 @@ ENV_DOCS = {
     "NUM_COORD": ("Fleet", "coordinators; must be 1 (v0.5.8 has no clustering)"),
     "LMCACHE_IMAGE": ("Fleet", "image for coordinator, servers and stimulators"),
     "CHUNK_SIZE": ("Fleet", "chunk size; must match across servers and coordinator"),
-    "L1_GB": ("Fleet", "per-server L1 DRAM tier size"),
+    "L1_GIB": ("Fleet", "per-server L1 DRAM tier size in GiB"),
     "EVICT_WATERMARK": ("Fleet", "L1 fraction that triggers the L2 spill"),
     "SHM_SIZE": ("Fleet", "/dev/shm per server and stimulator"),
     "COORD_PORT": ("Fleet", "host port the coordinator is published on"),
@@ -51,6 +52,13 @@ ENV_DOCS = {
     "RANGE_LO": ("Workload", "low bound of the block sub-range windows sit in"),
     "RANGE_HI": ("Workload", "high bound of that sub-range"),
 
+    "STIM_OP": ("Workload", "what stim-N does: store, or verify (store then reread)"),
+    "STIM_INTERVAL": ("Workload", "seconds between a stimulator's store requests"),
+    "RESTORE_ORDER": ("Workload", "how restore-N walks its window: random or sequential"),
+    "RESTORE_COUNT": ("Workload", "restore requests each restore-N sends"),
+    "RESTORE_INTERVAL": ("Workload", "seconds between a restore-N's requests"),
+    "RESTORE_MIN_HIT_RATE": ("Workload", "restore-N fails below this fraction of chunks found"),
+
     "L2_DEDUP": ("L2 simulation", "1 = one canonical file per block size (fake contents)"),
     "L2_LINK_MODE": ("L2 simulation", "hardlink or symlink for collapsed files"),
     "L2_WRITE_DELAY_MS": ("L2 simulation", "fixed delay added to each L2 store"),
@@ -58,7 +66,7 @@ ENV_DOCS = {
     "L2_WRITE_DELAY_MS_PER_MB": ("L2 simulation", "store delay per MiB written"),
     "L2_READ_DELAY_MS_PER_MB": ("L2 simulation", "load delay per MiB read"),
     "L2_DELAY_JITTER": ("L2 simulation", "fractional jitter on L2 delays, 0 to 1"),
-    "L2_CAPACITY_GB": ("L2 simulation", "per-server L2 capacity in logical GB; 0 = unbounded, no eviction"),
+    "L2_CAPACITY_GIB": ("L2 simulation", "per-server L2 capacity in logical GiB; 0 = unbounded, no eviction"),
     "L2_EVICT_POLICY": ("L2 simulation", "L2 eviction policy once a capacity is set: LRU or ARC"),
     "L2_EVICT_WATERMARK": ("L2 simulation", "L2 usage fraction that triggers eviction"),
     "L2_EVICT_RATIO": ("L2 simulation", "fraction of L2 evicted each time it triggers"),
@@ -94,6 +102,7 @@ _SECTION_ORDER = ["Fleet", "Workload", "L2 simulation", "Monitoring", "Runtime",
 
 # Defaults the source computes rather than spells out.
 COMPUTED_DEFAULTS = {
+    "RESTORE_COUNT": "SEQ",
     "NUM_SERVERS": "3 (or argv[1])",
     "TOTAL": "NUM_SERVERS x SEQ x blocks",
     "RANGE_HI": "TOTAL",
@@ -163,7 +172,7 @@ def _print_env_vars():
     c = _env_vars_palette()
     print(f"\n{c['bold']}LMCache Fleet environment variables{c['off']}\n")
     print(f"  {c['dim']}Pass them to make, e.g."
-          f"  L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000{c['off']}")
+          f"  L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=6000{c['off']}")
     print(f"  {c['dim']}NUM and SEQ are make variables; "
           f"everything below is an env var.{c['off']}")
     for section in _SECTION_ORDER:
@@ -194,9 +203,19 @@ if NUM_COORD != 1:
     sys.exit(f"NUM_COORD={NUM_COORD}: LMCache {os.environ.get('LMCACHE_VERSION', 'v0.5.8')} "
              "supports exactly one coordinator per fleet")
 
+# Sizes are GiB, and named so. LMCache's own flags say "gb" (--l1-size-gb,
+# max_capacity_gb) but multiply by 1024**3, so the old *_GB names here promised
+# a unit nothing honoured. An old name still set is an error rather than
+# ignored: silently falling back to the 1 GiB default L1 turns a run meant to
+# spill into one that never does.
+for _old, _new in (("L1_GB", "L1_GIB"), ("L2_CAPACITY_GB", "L2_CAPACITY_GIB")):
+    if _old in os.environ:
+        sys.exit(f"{_old} was renamed {_new} (the value was always GiB); "
+                 f"set {_new}={os.environ[_old]} instead")
+
 IMAGE        = os.environ.get("LMCACHE_IMAGE", "lmcache-fleet-demo/lmcache:0.5.8-cpu")
 CHUNK_SIZE   = int(os.environ.get("CHUNK_SIZE", "256"))
-L1_GB        = float(os.environ.get("L1_GB", "1"))
+L1_GIB        = float(os.environ.get("L1_GIB", "1"))
 SEQS         = int(os.environ.get("SEQ", "6"))          # distinct synthetic sequences per stimulator
 NUM_TOKENS   = int(os.environ.get("NUM_TOKENS", "512")) # tokens per synthetic request
 COORD_PORT   = int(os.environ.get("COORD_PORT", "9300")) # host 127.0.0.1 port for coordinator
@@ -298,7 +317,7 @@ L2_DELAYS = {
 L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
 
 # L2 eviction. Off by default: L2 grows without bound, as it always has here.
-# Setting L2_CAPACITY_GB turns it on, and three things have to change together
+# Setting L2_CAPACITY_GIB turns it on, and three things have to change together
 # for LMCache to act on it -- get any one wrong and nothing is evicted:
 #   * the backing adapter becomes fs_native. Plain fs declares no capacity, so
 #     LMCache logs "does not support global eviction" and skips it.
@@ -307,13 +326,13 @@ L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
 #     the near-zero disk actually used -- which is the point of modelling it.
 #   * the "eviction" block goes on the OUTERMOST spec, the one --l2-adapter
 #     parses. Inside the plugin's "inner" it is ignored without a warning.
-L2_CAPACITY_GB = float(os.environ.get("L2_CAPACITY_GB", "0"))
+L2_CAPACITY_GIB = float(os.environ.get("L2_CAPACITY_GIB", "0"))
 L2_EVICT_POLICY = os.environ.get("L2_EVICT_POLICY", "LRU")
 L2_EVICT_WATERMARK = float(os.environ.get("L2_EVICT_WATERMARK", "0.8"))
 L2_EVICT_RATIO = float(os.environ.get("L2_EVICT_RATIO", "0.2"))
-if L2_CAPACITY_GB < 0:
-    sys.exit(f"L2_CAPACITY_GB={L2_CAPACITY_GB:g} must be >= 0 (0 disables L2 eviction)")
-if L2_CAPACITY_GB:
+if L2_CAPACITY_GIB < 0:
+    sys.exit(f"L2_CAPACITY_GIB={L2_CAPACITY_GIB:g} must be >= 0 (0 disables L2 eviction)")
+if L2_CAPACITY_GIB:
     # IsolatedLRU evicts per cache_salt against coordinator quotas, not against
     # this capacity, and noop never evicts: neither does what the knob says.
     if L2_EVICT_POLICY not in ("LRU", "ARC"):
@@ -330,7 +349,7 @@ if L2_CAPACITY_GB:
     # "will NOT bound disk usage" because it sees none on its own spec -- a
     # false alarm in every server log when the outer block is doing the work.
     _fs_spec = {"type": "fs_native", "base_path": "/data/l2",
-                "max_capacity_gb": L2_CAPACITY_GB, **L2_EVICTION}
+                "max_capacity_gb": L2_CAPACITY_GIB, **L2_EVICTION}
 else:
     _fs_spec = {"type": "fs", "base_path": "/data/l2"}
     L2_EVICTION = {}
@@ -450,6 +469,30 @@ DIRECTORY_POLL = os.environ.get("DIRECTORY_POLL", "15")
 # n_kv*n_layers tensors of NB*BS*H*D*2bytes; keep the product well under L1.
 SHAPE_SPEC = os.environ.get("SHAPE_SPEC", "(2,64,16,4,64):float16:4")
 
+# ---------------- stimulators ------------------------------------------------
+# scripts/stim.py rather than `lmcache bench server`. The bench is a sanity
+# test with one fixed case: store a sequence, then read the same one straight
+# back. Every block is read while still in L1, L2 never serves a read, and the
+# write and read rates cannot be told apart. stim.py drives the same client one
+# operation at a time, so stores and restores are separate services:
+#   stim-N     profile "stim":    stores its window, reads nothing back
+#   restore-N  profile "restore": retrieves from the same window, stores nothing
+# STIM_OP=verify puts the bench's store-then-reread case back for stim-N.
+STIM_OP = os.environ.get("STIM_OP", "store")
+if STIM_OP not in ("store", "verify"):
+    sys.exit(f"STIM_OP={STIM_OP!r} must be store or verify "
+             "(restores are their own service: make restore)")
+STIM_INTERVAL = float(os.environ.get("STIM_INTERVAL", "0.2"))
+# Restores sample the window at random by default. In order, a restore walks
+# the oldest blocks first, which are exactly the ones L2 eviction has taken.
+RESTORE_ORDER = os.environ.get("RESTORE_ORDER", "random")
+if RESTORE_ORDER not in ("random", "sequential"):
+    sys.exit(f"RESTORE_ORDER={RESTORE_ORDER!r} must be random or sequential")
+RESTORE_COUNT = int(os.environ.get("RESTORE_COUNT", str(SEQS)))
+RESTORE_INTERVAL = float(os.environ.get("RESTORE_INTERVAL", "0.2"))
+RESTORE_MIN_HIT_RATE = float(os.environ.get("RESTORE_MIN_HIT_RATE", "0"))
+_SCRIPTS_MOUNT = "/opt/lmcache-fleet/scripts"
+
 servers, stimulators = [], []
 
 for i in range(1, NUM_SERVERS + 1):
@@ -476,7 +519,7 @@ for i in range(1, NUM_SERVERS + 1):
       --host 0.0.0.0 --port 5555
       --http-host 0.0.0.0 --http-port 8080
       --chunk-size {CHUNK_SIZE}
-      --l1-size-gb {L1_GB}
+      --l1-size-gb {L1_GIB}
       --eviction-policy LRU
       --eviction-trigger-watermark {EVICT_WATERMARK}
       --supported-transfer-mode auto
@@ -487,24 +530,37 @@ for i in range(1, NUM_SERVERS + 1):
       --l2-adapter '{L2_ADAPTER_JSON}'
 """)
 
-    stimulators.append(f"""  stim-{i}:
-    image: {IMAGE}
-    profiles: [stim]
-{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so bench's CPU SHM path reaches the server
+    # Everything a client of server i needs, whichever operation it runs.
+    _client = f"""{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so the client's CPU SHM path reaches the server
     shm_size: {SHM_SIZE}
     networks: [fleet]
+    volumes:
+      - ../scripts:{_SCRIPTS_MOUNT}:ro
     depends_on:
       {name}:
         condition: service_healthy
     command: >
-      /opt/venv/bin/lmcache bench server
+      /opt/venv/bin/python {_SCRIPTS_MOUNT}/stim.py
       --rpc-url tcp://{name}:5555
       --url {STIM_URL or f"http://{name}:8080"}
       --mode cpu --transfer-mode lmcache_driven
       --kvcache-shape-spec "{SHAPE_SPEC}"
       --num-tokens {NUM_TOKENS}
       --start {windows[i - 1][0]} --end {windows[i - 1][1]}
-      --interval 0.2
+"""
+    stimulators.append(f"""  stim-{i}:
+    image: {IMAGE}
+    profiles: [stim]
+{_client}      --op {STIM_OP} --interval {STIM_INTERVAL:g}
+""")
+    # Its own client index, so a restore running alongside the store does not
+    # register its workers under the ids the store client already holds.
+    stimulators.append(f"""  restore-{i}:
+    image: {IMAGE}
+    profiles: [restore]
+{_client}      --op restore --client-index 1
+      --order {RESTORE_ORDER} --count {RESTORE_COUNT} --seed {i}
+      --interval {RESTORE_INTERVAL:g} --min-hit-rate {RESTORE_MIN_HIT_RATE:g}
 """)
 
 compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
@@ -666,12 +722,12 @@ if L2_PLUGIN:
     _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
     print(f"L2: {_fs_spec['type']} wrapped by lmcache_l2_sim "
           f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
-          f"{' — L2 contents are fake, bench checksum verification off' if L2_DEDUP else ''}")
+          f"{' — L2 contents are fake, checksum verification off' if L2_DEDUP else ''}")
 else:
     print(f"L2: {_fs_spec['type']} (real bytes on disk)")
-if L2_CAPACITY_GB:
+if L2_CAPACITY_GIB:
     print(f"L2 eviction: {L2_EVICT_POLICY} at {L2_EVICT_WATERMARK:.0%} of "
-          f"{L2_CAPACITY_GB:g} GB logical per server, "
+          f"{L2_CAPACITY_GIB:g} GiB logical per server, "
           f"evicting {L2_EVICT_RATIO:.0%} each time")
 else:
-    print("L2 eviction: off (L2_CAPACITY_GB=0), L2 grows without bound")
+    print("L2 eviction: off (L2_CAPACITY_GIB=0), L2 grows without bound")

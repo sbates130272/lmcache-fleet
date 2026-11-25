@@ -210,6 +210,21 @@ panels = [
         ('sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[1m]))', T2)],
        "cps", 12, 36, w=12, overrides=TIER_OVERRIDES,
        desc="Which tier served the hits, fleet-wide."),
+    ts("Chunks Retrieved by Clients/Second",
+       [('sum by (server) (rate(lmcache_mp_num_chunks_loaded_total{server=~"$server"}[1m]))',
+         "{{server}}")],
+       "cps", 0, 40, overrides=SERVER_OVERRIDES,
+       desc="Chunks handed back to a client by a retrieve, whichever tier "
+            "they came from: the read side of the fleet. The stimulators only "
+            "store, so this stays at zero until `make restore` runs."),
+    ts("L2 to L1 Loads/Second",
+       [('rate(lmcache_mp_l2_prefetch_load_completed_chunks_total{server=~"$server"}[1m])',
+         "{{server}}")],
+       "cps", 12, 40, overrides=SERVER_OVERRIDES,
+       desc="Chunks loaded from L2 back into L1 because a lookup asked for "
+            "something L1 no longer held. The share of the panel on the left "
+            "that had to come from L2. Each load takes L1 space, so it also "
+            "shows up as L1 evictions."),
     row("Key Directory Inventory (Directory Exporter)", 44),
     ts("L2 Placements per Server",
        [('sum by (server) (lmcache_directory_placements{tier="l2",server=~"$server"})', "{{server}}")],

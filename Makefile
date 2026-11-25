@@ -17,7 +17,7 @@ endef
 export TARGETS_PY
 
 .DEFAULT_GOAL := help
-.PHONY: help image gen up stim run dash targets report check shot test-plugins test-released dist publish-precheck publish down clean logs env-vars
+.PHONY: help image gen up stim restore run dash targets report check shot test-plugins test-released dist publish-precheck publish down clean logs env-vars
 
 # One publishable distribution per plugins/<dir>/pyproject.toml, each built and
 # uploaded on its own. Discovered by wildcard rather than listed, so a new
@@ -47,8 +47,15 @@ up: image gen ## Regenerate, then start the fleet plus prometheus and grafana
 	@$(COMPOSE) ps --format '{{.Name}} {{.Status}}'
 	@$(MAKE) --no-print-directory dash
 
-stim: image gen ## Run the one-shot bench stimulators to store KV chunks
+stim: image gen ## Run the one-shot stimulators to store KV chunks
 	$(COMPOSE) --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
+
+# The read side, and separate on purpose: the stimulators only store, so what
+# gets fetched back, how fast and in what order is this target's alone. Run it
+# after `stim` to pull blocks back from L1 and L2, or alongside it. Regenerating
+# changes only the stim and restore services, so the servers are left running.
+restore: image gen ## Run the one-shot restore stimulators to fetch KV chunks back
+	$(COMPOSE) --profile restore up --detach $(shell seq 1 $(NUM) | sed 's/^/restore-/')
 
 # `up` and `stim` stay separate so the stimulators can be re-run against a warm
 # fleet, or the fleet inspected before anything is stored. For a plain run,
@@ -158,8 +165,11 @@ targets: ## Show what Prometheus is scraping and whether it is up
 report: ## Print the key directory, per-server L1 usage and L2 files vs disk
 	scripts/report.sh $(NUM)
 
+# With L2_CAPACITY_GIB set, as for the run being checked, it also requires every
+# server to have evicted from L2 and to sit within that capacity: a capacity
+# that is configured but never enforced fills both tiers just the same.
 check: ## Assert every server registered and holds both L1 and L2 placements
-	python3 scripts/check_fleet.py $(NUM)
+	python3 scripts/check_fleet.py $(NUM) $(if $(filter-out 0 0.0,$(L2_CAPACITY_GIB)),--l2-eviction)
 
 shot: ## Screenshot the Grafana dashboard to SHOT (needs playwright chromium)
 	@port=$$($(COMPOSE) port grafana 3000 2>/dev/null | cut -d: -f2); \
@@ -173,7 +183,7 @@ logs: ## Follow logs from every service
 ##@ Teardown
 
 down: ## Stop and remove the fleet containers
-	$(COMPOSE) --profile stim down --remove-orphans
+	$(COMPOSE) --profile stim --profile restore down --remove-orphans
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"

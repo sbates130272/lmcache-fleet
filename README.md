@@ -29,15 +29,17 @@
 This repository contains the tools needed to generate and deploy a
 programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
 one coordinator building the fleet-wide key directory, and per-server one-shot
-stimulators (`lmcache bench server --mode cpu`, no vLLM) that STORE synthetic KV
-chunks. Eviction past the L1 watermark spills blocks to L2; the coordinator
-directory tracks both placements.
+stimulators (no vLLM) that store synthetic KV chunks and, separately, fetch
+them back. Eviction past the L1 watermark spills blocks to L2, an optional L2
+capacity evicts from there in turn, and the coordinator directory tracks both
+placements.
 
 ## Usage
 
 ```bash
 make up NUM=4 SEQ=20            # generate, start fleet + prometheus + grafana, print the URL
-make stim NUM=4 SEQ=20          # make stores
+make stim NUM=4 SEQ=20          # store KV blocks (stores only, nothing read back)
+make restore NUM=4 SEQ=20       # fetch blocks back, from L1 and through L2
 make report NUM=4               # directory: per-instance L1/L2 placements
 make check NUM=4                # same directory, as a pass/fail assertion
 make dash                       # Grafana URL (compose picks a free host port)
@@ -53,7 +55,8 @@ make targets pass `-f` themselves.
 ```
 .github/     CI: one smoke-test lane that runs a real fleet, three lint lanes
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
-scripts/     gen_compose.py (writes the compose file), report.sh, check_fleet.py
+scripts/     gen_compose.py (writes the compose file), stim.py (the stimulator),
+             report.sh, check_fleet.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
 data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
@@ -96,7 +99,7 @@ L2_DEDUP=1 make up NUM=2 SEQ=40
 L2_DEDUP=1 make stim NUM=2 SEQ=40
 ```
 
-Same run, stock vs dedup (2 servers, `L1_GB=0.05 SEQ=40`):
+Same run, stock vs dedup (2 servers, `L1_GIB=0.05 SEQ=40`):
 
 | | stock `fs` | `L2_DEDUP=1` |
 | --- | --- | --- |
@@ -121,14 +124,14 @@ adapter outside this demo, and the upstreaming note.
 
 ## L2 Capacity and Eviction
 
-By default L2 grows without bound. `L2_CAPACITY_GB` gives each server an L2
+By default L2 grows without bound. `L2_CAPACITY_GIB` gives each server an L2
 capacity, and LMCache then evicts from L2 once usage crosses a watermark:
 
 ```bash
-L2_DEDUP=1 L1_GB=0.05 L2_CAPACITY_GB=0.1 make run NUM=2 SEQ=120
+L2_DEDUP=1 L1_GIB=0.05 L2_CAPACITY_GIB=0.1 make run NUM=2 SEQ=120
 ```
 
-Each server stores 240 blocks (240 MiB logical) against 0.1 GB. Verified on
+Each server stores 240 blocks (240 MiB logical) against 0.1 GiB. Verified on
 that run: eviction fires 35 times per server, each ends holding 80 L2 blocks
 (78% of capacity), the coordinator's directory agrees at 80 L2 placements, and
 the exporter counts the other 160 as removed. `L2_EVICT_WATERMARK` (0.8),
@@ -158,6 +161,55 @@ line, and "Oldest L2 Block per Server" stops rising.
 One gap: blocks left on disk by an earlier run of the same server are not
 counted towards its usage, so eviction never reclaims them. `make clean`
 between runs when capacity matters.
+
+## Storing and Restoring
+
+Stores and restores are separate jobs, so the write side and the read side of
+the cache can be driven apart:
+
+```bash
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=60     # fleet up, stim-N store their windows
+L2_DEDUP=1 L1_GIB=0.05 make restore NUM=2 SEQ=60 # restore-N fetch blocks back
+```
+
+`stim-N` looks each sequence in its window up and stores what is missing.
+`restore-N` looks sequences from the same window up and retrieves what is
+there, the way an engine pulls a prefix back, and stores nothing. A block still
+in L1 is served from L1; one that has spilled is loaded from L2 into L1 first,
+which in turn evicts something else from L1. Run `make restore` after the
+stores, or alongside them. Pass it the same variables as the run it follows:
+the compose file is regenerated, and a changed server definition would restart
+the servers.
+
+Both are [scripts/stim.py](scripts/stim.py), which drives the client inside
+`lmcache bench server` one operation at a time. The bench itself is not used
+because it is a sanity test with one fixed case: store a sequence, then read
+the same one straight back. Every block is then read while it is still in L1,
+L2 never serves a read, and the two rates cannot be separated. `STIM_OP=verify`
+brings that case back when the point is to check that bytes round-trip.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `RESTORE_ORDER` | `random` | `random` samples the window with replacement; `sequential` walks it, oldest first |
+| `RESTORE_COUNT` | `SEQ` | requests each `restore-N` sends |
+| `RESTORE_INTERVAL` | `0.2` | seconds between them; `STIM_INTERVAL` is the store side |
+| `RESTORE_MIN_HIT_RATE` | `0` | a `restore-N` exits non-zero below this fraction of chunks found |
+
+Each stimulator ends with one JSON line in its log — requests, chunks hit,
+stored and retrieved, hit rate, and p50/p99 latency per operation:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile restore logs | grep '{"op"'
+```
+
+A restore cannot find what L2 eviction has already taken, so with
+`L2_CAPACITY_GIB` set the hit rate is below 1 by design. On the dashboard,
+"Chunks Retrieved by Clients/Second" is the read side as a whole, "L2 to L1
+Loads/Second" is the part that had to come from L2, and "Lookup Hit
+Tokens/Second by Tier" splits the hits by tier.
+
+Each server has its own L2 directory, so a restore only finds what *its*
+server stored: `restore-N` reads the window `stim-N` wrote.
 
 ## Monitoring the Fleet
 
@@ -246,7 +298,7 @@ deleted.
 
 ## Reporting on the Fleet
 
-`report.sh` output (verified on 2 servers, L1_GB=0.05, SEQ=40, 512 tokens/req):
+`report.sh` output (verified on 2 servers, L1_GIB=0.05, SEQ=40, 512 tokens/req):
 
 ```
 fleet: 2 registered instance(s)
@@ -285,10 +337,19 @@ in one of two shapes:
 
 ```bash
 # on a PR -- gates the merge, so it stays small and quick
-L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=40
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=40
 # on main -- gates nothing, and is where the published dashboard comes from
-L2_DEDUP=1 L1_GB=0.05 make run NUM=4 SEQ=200
+L2_DEDUP=1 L1_GIB=0.05 L2_CAPACITY_GIB=0.2 make run NUM=4 SEQ=200
 ```
+
+A PR runs its shape twice, side by side: once with L2 unbounded and once with
+`L2_CAPACITY_GIB=0.05`, because the two are different code paths end to end — a
+different backing adapter, an eviction controller that either exists or does
+not. `main` runs only the capped one, so the published dashboard shows L2
+turning over. In the capped runs `make check` also requires every server to
+have actually evicted and to sit within its capacity; both tiers fill whether
+or not a capacity is enforced, so without that the run would pass on a fleet
+that ignored it.
 
 The PR shape is the verified recipe above; measured at 4m46s cold, of which
 2m31s was the image build, so roughly 2m40s once the layer cache is warm. The
@@ -297,7 +358,7 @@ runs long enough that the dashboard has a real curve on it rather than a spike.
 
 The image is built in-workflow behind a buildx `type=gha` cache, which means
 the Dockerfile is continuously tested rather than only when someone remembers.
-`L1_GB=0.05` makes the sequences overflow L1, so the run exercises the eviction
+`L1_GIB=0.05` makes the sequences overflow L1, so the run exercises the eviction
 and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
 L2 through the sim adapter, so the spill costs ~1 MB per server instead of
 hundreds — the runner's disk never becomes the constraint.
@@ -336,10 +397,10 @@ has described shows up under "undocumented" rather than going unmentioned.
 `NUM` and `SEQ` are make variables; everything else is an environment variable:
 
 ```bash
-L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=6000
 ```
 
-To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
+To force visible L2 spill on a small host: `L1_GIB=0.05 SEQ=40`.
 
 ## Key Space
 

@@ -23,7 +23,9 @@ def main():
     # the image without making Grafana think they are visible. Making the
     # viewport itself tall enough for the whole dashboard is what gets every
     # panel to load.
-    ap.add_argument("--height", type=int, default=5200)
+    # It has to exceed the dashboard, not match it: the dashboard is about 5240
+    # px tall, and anything past the viewport is cropped off below.
+    ap.add_argument("--height", type=int, default=6400)
     # Panels render from Prometheus queries that fire after first paint; a
     # networkidle wait returns before the graphs have data on them.
     ap.add_argument("--settle", type=float, default=8,
