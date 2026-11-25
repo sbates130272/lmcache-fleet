@@ -71,3 +71,12 @@ jobs:
           assert f.filter(rec("/cache/pins", 200)) is True, "real traffic must print"
           print("filter ok")
           PY
+
+      # Every trace-N computes the replay schedule and the routing on its own
+      # and keeps its share. If those were not deterministic, or the shares did
+      # not partition the trace, requests would be sent twice or never and the
+      # run would still exit 0 with a plausible hit rate.
+      - name: Token trace format, schedule and routing
+        run: |
+          pip install --quiet numpy
+          python3 scripts/check_tracelib.py

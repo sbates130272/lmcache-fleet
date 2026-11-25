@@ -113,6 +113,46 @@ spec has no `eviction` block. Under this adapter that warning is a false alarm
 if the outer block is present; repeating the block inside `inner` silences it
 and is otherwise harmless.
 
+## One directory shared by several servers
+
+Several LMCache servers can point this adapter at one directory — a shared
+filesystem standing in for a shared L2 — and a block one of them stored is then
+a hit for the others. Needs 0.1.2 or later.
+
+```bash
+lmcache server ... --l2-adapter '{
+  "type": "plugin",
+  "module_path": "lmcache_l2_sim.l2_sim_adapter",
+  "class_name": "L2SimAdapter",
+  "adapter_params": {
+    "inner": {"type": "fs", "base_path": "/mnt/shared-l2",
+              "relative_tmp_dir": ".tmp-server-1", "shared": true}
+  },
+  "shared": true
+}'
+```
+
+- **Give each server its own `relative_tmp_dir`.** This is LMCache's, not this
+  adapter's: both fs adapters write `<key>.tmp` and rename it into place, so
+  two servers storing the same block at once rename each other's file away and
+  the loser logs a `FileNotFoundError`. The block is there either way, but the
+  log is not quiet.
+- **`"shared": true` goes on the outermost spec**, like `eviction`, and for the
+  same reason. It tells the coordinator the domain is mounted by several
+  servers, so it records one placement for a block instead of one per server.
+- **The canonical directory is shared too**, which is what you want: one
+  canonical file per block size for the whole directory. Before 0.1.2 the
+  temporary links used while collapsing were named by a per-process counter,
+  so two servers could pick the same name; they now carry a per-adapter token.
+- **A capacity is counted per server.** Each server's `fs_native` counts the
+  bytes it wrote, so `max_capacity_gb` bounds each server's contribution to
+  the directory rather than the directory. A block one server evicts is a miss
+  for the rest.
+
+A server can also list two adapters, its own directory first and the shared one
+second: LMCache stores every key to both and serves a lookup from the first
+that holds it.
+
 ## Tests
 
 The tests need LMCache importable, so they run inside an image that has it:

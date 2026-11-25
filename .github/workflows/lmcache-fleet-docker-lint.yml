@@ -67,6 +67,51 @@ jobs:
           print("eviction block on the outermost spec, capacity on fs_native")
           PY
 
+      # L2_SHARED adds a second --l2-adapter per server, SHARE_GROUPS deals the
+      # servers across shared directories, and TRACE adds the trace-N services.
+      # What is asserted is what breaks without a sound: the local tier has to
+      # come first (a lookup takes the first adapter that holds the key), the
+      # shared one has to be marked shared, and each server needs its own temp
+      # dir in it -- with one name between them, two servers storing a block
+      # rename each other's file away. The trace is a stub: the generator only
+      # checks that one is there.
+      - name: Validate generated compose, shared L2 tier and trace replay
+        run: |
+          mkdir -p data/traces/stub && touch data/traces/stub/index.jsonl
+          L2_DEDUP=1 L2_SHARED=1 SHARE_GROUPS=2 L2_CAPACITY_GIB=0.1 \
+            TRACE=stub TRACE_ROUTE=request NUM_SERVERS=4 python3 scripts/gen_compose.py
+          docker compose -f docker/docker-compose.yml --profile trace config -q
+          python3 - <<'PY'
+          import json, re
+          text = open("docker/docker-compose.yml").read()
+          servers = re.split(r"\n  lmcache-server-\d+:\n", text)[1:]
+          assert len(servers) == 4, len(servers)
+          tmp_dirs, mounts = set(), []
+          for block in servers:
+              block = block.split("\n  stim-")[0]
+              local, shared = (json.loads(s) for s in re.findall(r"--l2-adapter '(.*)'", block))
+              assert not local.get("shared") and "eviction" in local, local
+              assert local["adapter_params"]["inner"]["base_path"] == "/data/l2", local
+              inner = shared["adapter_params"]["inner"]
+              assert shared["shared"] is True and inner["base_path"] == "/data/l2-shared", shared
+              tmp_dirs.add(inner["relative_tmp_dir"])
+              mounts.append(re.search(r"data/(l2-shared-\d+):/data/l2-shared", block).group(1))
+          assert len(tmp_dirs) == 4, tmp_dirs
+          assert mounts == ["l2-shared-1", "l2-shared-2"] * 2, mounts
+          shards = re.findall(r"--shard (\d+) --shards (\d+) --route (\w+)", text)
+          assert shards == [(str(i), "4", "request") for i in range(4)], shards
+          print("local then shared, a temp dir per server, 2 groups of 2, 4 trace shards")
+          PY
+
+      - name: Reject an unsupported sharing setup
+        run: |
+          for bad in L2_SHARED=maybe SHARE_GROUPS=5 TRACE=missing; do
+            if env "$bad" NUM_SERVERS=2 python3 scripts/gen_compose.py 2>/dev/null; then
+              echo "generator accepted $bad" >&2
+              exit 1
+            fi
+          done
+
       # NUM_COORD is the one input the generator is documented to reject. If it
       # ever stops rejecting it, the fleet silently builds a split-brain key
       # directory, so the failure path is worth a check of its own.

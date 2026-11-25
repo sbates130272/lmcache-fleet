@@ -38,6 +38,7 @@ import select
 import stat
 import threading
 import time
+import uuid
 
 if TYPE_CHECKING:
     # First Party
@@ -343,6 +344,10 @@ class L2SimAdapter(L2AdapterInterface):
         self._canonical_files = 0
         self._collapse_errors = 0
         self._tmp_counter = 0
+        # Names this adapter's temporary links. A counter alone is unique in
+        # one process only: servers deduping into one shared directory each
+        # start at 1, and in containers they are all pid 1 as well.
+        self._tmp_token = uuid.uuid4().hex[:12]
 
         # The controllers poll OUR fds; the pump polls the inner adapter's.
         self._store_efd = create_event_notifier()
@@ -415,7 +420,9 @@ class L2SimAdapter(L2AdapterInterface):
                         continue  # already a hardlink to the canonical file
                 with self._lock:
                     self._tmp_counter += 1
-                    tmp = self._canonical_dir / f".link-{self._tmp_counter}.tmp"
+                    tmp = self._canonical_dir / (
+                        f".link-{self._tmp_token}-{self._tmp_counter}.tmp"
+                    )
                 if self._link_mode == "hardlink":
                     os.link(canonical, tmp)
                 else:

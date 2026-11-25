@@ -130,6 +130,18 @@ def bucket(value, buckets):
     return buckets[-1][0]
 
 
+def backend_of(placement):
+    """A placement's backend label, with a shared storage domain marked as one.
+
+    A server with a local L2 and a shared L2 reports both under one adapter
+    type, so the type alone cannot tell them apart. The coordinator records one
+    placement for a block in a shared domain, under whichever server reported
+    it first, so a "-shared" series is the domain's inventory filed under that
+    server rather than something only that server holds.
+    """
+    return placement.get("backend", "") + ("-shared" if placement.get("shared") else "")
+
+
 def get(path):
     with urllib.request.urlopen(COORD + path, timeout=10) as r:
         return json.load(r)
@@ -247,10 +259,10 @@ def poll(state):
             if TOP_REUSED and held:
                 reuse.append((k.get("access_count", 0), ident["chunk_hash_hex"],
                               sorted({(live[p["instance_id"]], p["tier"]) for p in held}),
-                              [kid + (p["instance_id"], p["tier"], p.get("backend", ""))
+                              [kid + (p["instance_id"], p["tier"], backend_of(p))
                                for p in held]))
             for p in placements:
-                inst, tier, backend = p["instance_id"], p["tier"], p.get("backend", "")
+                inst, tier, backend = p["instance_id"], p["tier"], backend_of(p)
                 pid = kid + (inst, tier, backend)
                 if inst in live:
                     seen[pid] = (live[inst], tier, backend)

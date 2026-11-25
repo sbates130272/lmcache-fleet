@@ -18,23 +18,39 @@ one operation at a time:
             come from L1; blocks that have spilled are loaded from L2 first.
   verify    the bench's own store-then-reread case, unchanged, for checking
             that bytes round-trip.
+  trace     replay a token trace (scripts/traces.py builds them from real agent
+            sessions or synthesises them). Each request is looked up, the
+            prefix that hit is retrieved and the rest is stored, which is what
+            an engine does with a prompt. Requests arrive when the trace says,
+            so reuse, and the time between reuses, are the workload's own.
 
 It takes every `lmcache bench server` option, so the KV shape, transfer mode and
 RPC endpoint are spelled exactly as they are there. Runs inside the lmcache
 image, which is where the bench client lives.
 """
 import argparse
+import collections
 import json
 import math
+import os
 import random
 import sys
 import time
 
+import tracelib
 from lmcache.cli.commands.bench.server_bench.arguments import add_server_arguments
 from lmcache.cli.commands.bench.server_bench.cases.baseline import BaselineBenchCase
-from lmcache.cli.commands.bench.server_bench.client import ServerBenchClient
+from lmcache.cli.commands.bench.server_bench.client import (
+    LookupResult,
+    ServerBenchClient,
+)
 from lmcache.cli.commands.bench.server_bench.config import parse_args_to_config
-from lmcache.cli.commands.bench.server_bench.helpers import _build_token_ids
+from lmcache.cli.commands.bench.server_bench.helpers import (
+    _build_token_ids,
+    _make_key,
+    _poll_prefetch_status,
+    _send_lookup,
+)
 
 
 def sequences(args):
@@ -122,16 +138,185 @@ def run(client, args, log):
     return t, lat
 
 
+def patient_lookup(client, request, timeout_s):
+    """LOOKUP, waiting as long as a long prefix coming back from L2 can take.
+
+    The bench's own lookup gives the prefetch 2.5 seconds and then reports no
+    hit at all. That is plenty for the two chunks it was written for, and far
+    too little for a 100k-token prompt being loaded from a slow tier, where it
+    would turn every slow hit into a miss.
+    """
+    rpc = client._check_request_ready(request)
+    key = _make_key(request.token_ids, request.request_id, start=0,
+                    end=request.num_full_tokens, world_size=client._kv_world_size)
+    started = time.monotonic()
+    hit_tokens = None
+    if _send_lookup(rpc, key, tp_size=len(client._workers)):
+        hit_tokens = _poll_prefetch_status(
+            rpc, key.request_id, max_polls=max(1, int(timeout_s / 0.02)), poll_interval=0.02)
+    return LookupResult(
+        hit_chunks=(hit_tokens or 0) // request.chunk_size,
+        total_chunks=request.total_chunks,
+        latency_ms=(time.monotonic() - started) * 1000,
+        error=None if hit_tokens is not None else "timeout")
+
+
+def run_trace(client, args, log):
+    """Replay this client's share of a token trace; return tallies and latencies.
+
+    The client also keeps its own record of every chunk it has stored, which is
+    what lets a hit be attributed. A hit on a chunk this client stored came from
+    this server (and from this session or another one); a hit on a chunk it
+    never stored can only have come from a tier the servers share. A miss on a
+    chunk it did store is one the cache has since lost.
+    """
+    trace = tracelib.Trace(args.trace)
+    events = tracelib.schedule(trace, args.lanes, args.idle_cap, args.speedup,
+                               duration=args.duration, max_sessions=args.max_sessions)
+    chunk = client._chunk_size
+    capacity = client._num_blocks * client._block_size // chunk * chunk
+    t = collections.Counter()
+    lat = {"lookup": [], "store": [], "retrieve": [], "lag": []}
+    hit_gaps, lost_gaps = collections.Counter(), collections.Counter()
+    seen = {}           # chunk key -> [last touched, session that stored it]
+    state = {}          # session -> (tokens, chunk keys) of its previous request
+    # Open for the whole replay; closed after the loop.
+    out = open(args.log, "w") if args.log else None  # noqa: SIM115
+    log(f"trace {args.trace}: {len(events)} requests scheduled over "
+        f"{events[-1][0] if events else 0:.0f}s; this client is shard "
+        f"{args.shard} of {args.shards}, route={args.route}")
+    began = time.monotonic()
+
+    for n, (due, s, i) in enumerate(events):
+        sid, group, requests = trace.sessions[s]
+        spec = requests[i]
+        mine = tracelib.route(args.route, sid, group, i, args.shards) == args.shard
+        # Every session's tokens are rebuilt from deltas, so a request that is
+        # not ours still has to be applied -- but only cheaply, never hashed.
+        previous_tokens, previous_keys = state.get(s, (None, ()))
+        tokens = trace.tokens(spec, previous_tokens)
+        last_of_session = i == len(requests) - 1
+        if not mine:
+            state[s] = (tokens, ())
+            if last_of_session:
+                del state[s]
+            continue
+        keys = tracelib.chunk_keys(tokens[:capacity], chunk, previous_keys, spec["keep"])
+        state[s] = (tokens, keys)
+        if last_of_session:
+            del state[s]
+        if len(tokens) > capacity:
+            t["truncated"] += 1
+        if not keys:
+            t["skipped_short"] += 1
+            continue
+
+        wait = began + due - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        now = time.monotonic() - began
+        lat["lag"].append(max(0.0, now - due) * 1000)
+
+        request = client.create_request(
+            n, request_id=f"trace-{args.shard}-{n}", request_kind="trace",
+            token_ids=tokens[:len(keys) * chunk].tolist())
+        row = {"t": round(now, 3), "due": round(due, 3), "sid": sid, "g": group, "i": i,
+               "chunks": len(keys), "hit": 0}
+        try:
+            t["requests"] += 1
+            lookup = patient_lookup(client, request, args.lookup_timeout)
+            if not lookup.succeeded:
+                t["errors"] += 1
+                continue
+            lat["lookup"].append(lookup.latency_ms)
+            hit = lookup.hit_chunks
+            if hit:
+                done = client.retrieve(request, start_token=0, token_count=hit * chunk)
+                if done is None or not done.succeeded:
+                    t["errors"] += 1
+                    continue
+                lat["retrieve"].append(done.latency_ms)
+            if hit < len(keys):
+                done = client.store(request, start_token=hit * chunk,
+                                    token_count=(len(keys) - hit) * chunk)
+                if done is None or not done.succeeded:
+                    t["errors"] += 1
+                    continue
+                lat["store"].append(done.latency_ms)
+
+            tally = collections.Counter(chunks=len(keys), hit=hit)
+            for j, key in enumerate(keys):
+                known = seen.get(key)
+                if j < hit:
+                    if known is None:
+                        tally["hit_remote"] += 1
+                    else:
+                        tally["hit_same_session" if known[1] == s
+                              else "hit_other_session"] += 1
+                        hit_gaps[tracelib.gap_bucket(now - known[0])] += 1
+                elif known is None:
+                    tally["new"] += 1
+                else:
+                    tally["lost"] += 1
+                    lost_gaps[tracelib.gap_bucket(now - known[0])] += 1
+                if known is None:
+                    seen[key] = [now, s]
+                else:
+                    known[0] = now
+            t.update(tally)
+            t["full_hits"] += hit == len(keys)
+            t["full_misses"] += hit == 0
+            row.update(tally, lookup_ms=round(lookup.latency_ms, 2))
+            if out:
+                out.write(json.dumps(row, separators=(",", ":")) + "\n")
+                out.flush()
+        finally:
+            client.release_request(request)
+    if out:
+        out.close()
+
+    labels = tracelib.gap_labels()
+    extra = {
+        "trace": args.trace_name or os.path.basename(os.path.normpath(args.trace)),
+        "route": args.route,
+        "shard": [args.shard, args.shards], "speedup": args.speedup,
+        # Replay seconds. Multiply by speedup for the trace's own clock.
+        "hit_gap_s": {labels[b]: c for b, c in sorted(hit_gaps.items())},
+        "lost_gap_s": {labels[b]: c for b, c in sorted(lost_gaps.items())},
+    }
+    tallies = {"requests": 0, "chunks": 0, "hit": 0, "hit_same_session": 0,
+               "hit_other_session": 0, "hit_remote": 0, "lost": 0, "new": 0,
+               "full_hits": 0, "full_misses": 0, "truncated": 0, "errors": 0, **t}
+    return tallies, lat, extra
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--op", choices=("store", "restore", "verify"), default="store")
+    ap.add_argument("--op", choices=("store", "restore", "verify", "trace"), default="store")
+    tr = ap.add_argument_group("trace replay (--op trace)")
+    tr.add_argument("--trace", help="token trace directory (see scripts/traces.py)")
+    tr.add_argument("--trace-name", help="what to call the trace in the summary")
+    tr.add_argument("--shard", type=int, default=0, help="this client's server, 0-based")
+    tr.add_argument("--shards", type=int, default=1, help="servers the trace is spread over")
+    tr.add_argument("--route", choices=tracelib.ROUTES, default="session",
+                    help="what stays on one server: a session, a group, or nothing")
+    tr.add_argument("--lanes", type=int, default=8, help="sessions in flight, fleet-wide")
+    tr.add_argument("--idle-cap", type=float, default=60.0,
+                    help="longest gap kept between a session's requests, trace seconds")
+    tr.add_argument("--speedup", type=float, default=1.0, help="divide trace time by this")
+    tr.add_argument("--duration", type=float, default=None,
+                    help="stop scheduling after this many replay seconds")
+    tr.add_argument("--max-sessions", type=int, default=None)
+    tr.add_argument("--lookup-timeout", type=float, default=60.0,
+                    help="seconds to wait for a lookup's prefix to be loaded from L2")
+    tr.add_argument("--log", help="write one JSON line per request here")
     ap.add_argument("--order", choices=("sequential", "random"), default="sequential",
                     help="visit [--start, --end) in order, or sample it uniformly")
     ap.add_argument("--count", type=int, default=None,
                     help="requests to send (default: one per sequence in the window)")
     ap.add_argument("--seed", type=int, default=0, help="seed for --order random")
     ap.add_argument("--min-hit-rate", type=float, default=0.0,
-                    help="restore only: exit non-zero if fewer than this fraction "
+                    help="restore and trace: exit non-zero if fewer than this fraction "
                          "of the chunks asked for were found")
     ap.add_argument("--progress-every", type=float, default=15,
                     help="seconds between progress lines; 0 to print only the "
@@ -143,7 +328,12 @@ def main():
                     help="print only the summary line")
     add_server_arguments(ap)
     args = ap.parse_args()
-    if args.end is None or args.end <= args.start:
+    if args.op == "trace":
+        if not args.trace:
+            ap.error("--op trace needs --trace")
+        if not 0 <= args.shard < args.shards:
+            ap.error("--shard must be in [0, --shards)")
+    elif args.end is None or args.end <= args.start:
         ap.error("--end is required and must be greater than --start")
 
     def log(msg):
@@ -170,14 +360,19 @@ def main():
                 f"{result.passed_count('checksum_match')} checksum matches, "
                 f"{result.failed_count('checksum_match')} mismatches")
             return 0 if ok else 1
-        tallies, latencies = run(client, args, log)
+        if args.op == "trace":
+            tallies, latencies, extra = run_trace(client, args, log)
+            asked, found = tallies["chunks"], tallies["hit"]
+        else:
+            tallies, latencies = run(client, args, log)
+            asked, found = tallies["chunks_requested"], tallies["chunks_hit"]
+            extra = {"order": args.order, "window": [args.start, args.end]}
     finally:
         client.close()
 
     elapsed = time.monotonic() - started
-    hit_rate = (tallies["chunks_hit"] / tallies["chunks_requested"]
-                if tallies["chunks_requested"] else 0.0)
-    summary = {"op": args.op, "order": args.order, "window": [args.start, args.end],
+    hit_rate = found / asked if asked else 0.0
+    summary = {"op": args.op, **extra,
                **tallies, "hit_rate": round(hit_rate, 4), "elapsed_s": round(elapsed, 2)}
     for name, samples in latencies.items():
         if samples:
@@ -189,7 +384,7 @@ def main():
     if tallies["errors"]:
         print(f"FAIL: {tallies['errors']} request(s) errored", file=sys.stderr)
         return 1
-    if args.op == "restore" and hit_rate < args.min_hit_rate:
+    if args.op in ("restore", "trace") and hit_rate < args.min_hit_rate:
         print(f"FAIL: hit rate {hit_rate:.2%} is below --min-hit-rate "
               f"{args.min_hit_rate:.2%}", file=sys.stderr)
         return 1

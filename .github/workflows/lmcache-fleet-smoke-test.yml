@@ -223,3 +223,89 @@ jobs:
       - name: Tear down
         if: always()
         run: make clean NUM=$NUM || true
+
+  # The other workload and the other topology: a token trace replayed against
+  # servers that have a shared L2 behind their own. Its own job rather than
+  # more steps above, because L2_SHARED changes every server's definition and
+  # compose would recreate the fleet the legs above are asserting on.
+  trace-replay:
+    name: lmcache-fleet - Smoke Test (trace, shared L2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NUM: 2
+      # A trace chunk is 8 KiB, not 1 MiB, so L1 has to be smaller still for
+      # the replay to overflow it and read back through L2.
+      L1_GIB: 0.02
+      L2_SHARED: 1
+      TRACE: synth
+      # Every request of a session goes to the next server, so a server has
+      # none of the session's history of its own. With local L2s alone the
+      # most this trace can hit on two servers is 88.8% (`make trace-analyze`);
+      # with a shared tier it is 94.0%, and a run measures 93.4%. A floor of
+      # 0.9 therefore fails unless the shared tier is serving blocks.
+      TRACE_ROUTE: request
+      TRACE_SPEEDUP: 20
+      TRACE_MIN_HIT_RATE: 0.9
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the CPU-only image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: ${{ env.LMCACHE_IMAGE }}
+          load: true
+          cache-from: type=gha
+
+      # Synthetic, so the lane needs no download and no tokenizer: 40 sessions
+      # from a fixed seed, which is what makes the numbers above reproducible.
+      - name: Generate a token trace
+        run: make trace-synth NAME=$TRACE
+
+      - name: Start the fleet and replay the trace
+        run: |
+          make up NUM=$NUM
+          make trace NUM=$NUM
+
+      - name: Wait for the replay to finish
+        run: |
+          for i in $(seq 1 "$NUM"); do
+            cid=$(docker compose -f docker/docker-compose.yml --profile trace ps -aq "trace-$i")
+            if [ -z "$cid" ]; then echo "trace-$i never started" >&2; exit 1; fi
+            status=$(docker wait "$cid")
+            docker logs "$cid" 2>&1 | grep -E '^\{|^FAIL' || true
+            echo "trace-$i exited $status"
+            [ "$status" = "0" ] || exit 1
+          done
+
+      # The hit-rate floor is indirect evidence. This is the direct kind: a hit
+      # on a chunk the client never stored on its own server.
+      - name: Require hits served from another server
+        run: make trace-report REPORT_ARGS=--require-remote
+
+      - name: Report
+        run: make report NUM=$NUM
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml --profile trace logs --no-color --tail=200 > fleet-logs.txt 2>&1 || true
+          docker compose -f docker/docker-compose.yml ps --all >> fleet-logs.txt 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fleet-logs-trace
+          path: fleet-logs.txt
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: make clean NUM=$NUM || true

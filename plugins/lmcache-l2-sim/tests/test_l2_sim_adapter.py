@@ -270,6 +270,25 @@ def test_collapse_is_idempotent(adapter, tmp_path):
     assert adapter._collapse_errors == 0
 
 
+def test_two_adapters_can_share_one_directory(tmp_path):
+    """Servers mounting one shared L2 dedup into the same canonical directory."""
+    spec = {"inner": fs_spec(tmp_path)}
+    first = L2SimAdapter(L2SimAdapterConfig.from_dict(spec))
+    second = L2SimAdapter(L2SimAdapterConfig.from_dict(spec))
+    try:
+        assert first._tmp_token != second._tmp_token
+        mine, theirs = [make_key(i) for i in range(4)], [make_key(i) for i in range(4, 8)]
+        paths = [write_block(tmp_path, key) for key in mine + theirs]
+        first._collapse(mine)
+        second._collapse(theirs)
+        assert len({os.stat(p).st_ino for p in paths}) == 1
+        assert first._collapse_errors == second._collapse_errors == 0
+        assert not list((tmp_path / ".dedup").glob("*.tmp"))
+    finally:
+        first.close()
+        second.close()
+
+
 def test_collapse_skips_missing_files(adapter, tmp_path):
     """A key evicted between the store completing and the collapse is not an error."""
     present, absent = make_key(1), make_key(2)

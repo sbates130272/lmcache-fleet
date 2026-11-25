@@ -71,6 +71,23 @@ ENV_DOCS = {
     "L2_EVICT_WATERMARK": ("L2 simulation", "L2 usage fraction that triggers eviction"),
     "L2_EVICT_RATIO": ("L2 simulation", "fraction of L2 evicted each time it triggers"),
 
+    "L2_SHARED": ("L2 sharing", "0 = each server its own L2; 1 = add a tier the servers share; only = shared tier alone"),
+    "SHARE_GROUPS": ("L2 sharing", "shared directories the servers are dealt across: 1 = all share one, NUM_SERVERS = none do"),
+    "L2_SHARED_CAPACITY_GIB": ("L2 sharing", "shared-tier capacity in logical GiB, counted per server; 0 = unbounded"),
+    "L2_SHARED_READ_DELAY_MS": ("L2 sharing", "fixed delay added to each load from the shared tier"),
+    "L2_SHARED_WRITE_DELAY_MS": ("L2 sharing", "fixed delay added to each store to the shared tier"),
+
+    "TRACE": ("Trace replay", "token trace under data/traces to replay (see scripts/traces.py)"),
+    "TRACE_ROUTE": ("Trace replay", "what stays on one server: session, group or request"),
+    "TRACE_LANES": ("Trace replay", "sessions in flight across the fleet"),
+    "TRACE_SPEEDUP": ("Trace replay", "divide the trace's own timing by this"),
+    "TRACE_IDLE_CAP": ("Trace replay", "longest gap kept between a session's requests, trace seconds"),
+    "TRACE_DURATION": ("Trace replay", "stop scheduling after this many replay seconds; 0 = whole trace"),
+    "TRACE_SESSIONS": ("Trace replay", "replay only the first N sessions; 0 = all"),
+    "TRACE_SHAPE": ("Trace replay", "bench KV shape for trace clients; blocks x 16 tokens bounds a prompt"),
+    "TRACE_RUN": ("Trace replay", "name of the directory under data/trace-runs the request logs go to"),
+    "TRACE_MIN_HIT_RATE": ("Trace replay", "trace-N fails below this fraction of chunks found"),
+
     "PROM_IMAGE": ("Monitoring", "Prometheus image"),
     "GRAFANA_IMAGE": ("Monitoring", "Grafana image"),
     "EXPORTER_IMAGE": ("Monitoring", "image the directory exporter runs in"),
@@ -103,7 +120,7 @@ ENV_DOCS = {
     "AGE_BOUNDS": ("Exporter (set on the service)", "age bucket bounds, comma-separated durations"),
 }
 
-_SECTION_ORDER = ["Fleet", "Workload", "L2 simulation", "Monitoring", "Runtime",
+_SECTION_ORDER = ["Fleet", "Workload", "Trace replay", "L2 simulation", "L2 sharing", "Monitoring", "Runtime",
                   "Exporter (set on the service)", "undocumented"]
 
 # Defaults the source computes rather than spells out.
@@ -321,62 +338,123 @@ L2_DELAYS = {
     "read_delay_ms_per_mb": float(os.environ.get("L2_READ_DELAY_MS_PER_MB", "0")),
     "delay_jitter": float(os.environ.get("L2_DELAY_JITTER", "0")),
 }
-L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
 
 # L2 eviction. Off by default: L2 grows without bound, as it always has here.
-# Setting L2_CAPACITY_GIB turns it on, and three things have to change together
-# for LMCache to act on it -- get any one wrong and nothing is evicted:
-#   * the backing adapter becomes fs_native. Plain fs declares no capacity, so
-#     LMCache logs "does not support global eviction" and skips it.
-#   * max_capacity_gb goes on that backing spec. It is counted in logical
-#     bytes, so under dedup it bounds what the server believes it stored, not
-#     the near-zero disk actually used -- which is the point of modelling it.
-#   * the "eviction" block goes on the OUTERMOST spec, the one --l2-adapter
-#     parses. Inside the plugin's "inner" it is ignored without a warning.
+# Setting L2_CAPACITY_GIB turns it on; _l2_spec below has what that takes.
 L2_CAPACITY_GIB = float(os.environ.get("L2_CAPACITY_GIB", "0"))
 L2_EVICT_POLICY = os.environ.get("L2_EVICT_POLICY", "LRU")
 L2_EVICT_WATERMARK = float(os.environ.get("L2_EVICT_WATERMARK", "0.8"))
 L2_EVICT_RATIO = float(os.environ.get("L2_EVICT_RATIO", "0.2"))
 if L2_CAPACITY_GIB < 0:
     sys.exit(f"L2_CAPACITY_GIB={L2_CAPACITY_GIB:g} must be >= 0 (0 disables L2 eviction)")
-if L2_CAPACITY_GIB:
-    # IsolatedLRU evicts per cache_salt against coordinator quotas, not against
-    # this capacity, and noop never evicts: neither does what the knob says.
-    if L2_EVICT_POLICY not in ("LRU", "ARC"):
-        sys.exit(f"L2_EVICT_POLICY={L2_EVICT_POLICY!r} must be LRU or ARC")
-    if not 0 < L2_EVICT_WATERMARK <= 1:
-        sys.exit(f"L2_EVICT_WATERMARK={L2_EVICT_WATERMARK:g} must be in (0, 1]")
-    if not 0 < L2_EVICT_RATIO <= 1:
-        sys.exit(f"L2_EVICT_RATIO={L2_EVICT_RATIO:g} must be in (0, 1]")
-    L2_EVICTION = {"eviction": {"eviction_policy": L2_EVICT_POLICY,
-                                "trigger_watermark": L2_EVICT_WATERMARK,
-                                "eviction_ratio": L2_EVICT_RATIO}}
-    # The block is repeated on the backing spec even when the plugin wraps it.
-    # It does nothing there, but fs_native otherwise warns that the capacity
-    # "will NOT bound disk usage" because it sees none on its own spec -- a
-    # false alarm in every server log when the outer block is doing the work.
-    _fs_spec = {"type": "fs_native", "base_path": "/data/l2",
-                "max_capacity_gb": L2_CAPACITY_GIB, **L2_EVICTION}
-else:
-    _fs_spec = {"type": "fs", "base_path": "/data/l2"}
-    L2_EVICTION = {}
-if L2_PLUGIN:
-    L2_ADAPTER = {
-        "type": "plugin",
-        "module_path": "lmcache_l2_sim.l2_sim_adapter",
-        "class_name": "L2SimAdapter",
-        "adapter_params": {
-            "inner": _fs_spec,
-            "dedup": L2_DEDUP,
-            "link_mode": L2_LINK_MODE,
-            "seed": int(SEED) if SEED.lstrip("-").isdigit() else 0,
-            **{k: v for k, v in L2_DELAYS.items() if v},
-        },
-        **L2_EVICTION,
-    }
-else:
-    L2_ADAPTER = _fs_spec
-L2_ADAPTER_JSON = json.dumps(L2_ADAPTER, separators=(",", ":"))
+# IsolatedLRU evicts per cache_salt against coordinator quotas, not against
+# this capacity, and noop never evicts: neither does what the knob says.
+if L2_EVICT_POLICY not in ("LRU", "ARC"):
+    sys.exit(f"L2_EVICT_POLICY={L2_EVICT_POLICY!r} must be LRU or ARC")
+if not 0 < L2_EVICT_WATERMARK <= 1:
+    sys.exit(f"L2_EVICT_WATERMARK={L2_EVICT_WATERMARK:g} must be in (0, 1]")
+if not 0 < L2_EVICT_RATIO <= 1:
+    sys.exit(f"L2_EVICT_RATIO={L2_EVICT_RATIO:g} must be in (0, 1]")
+
+# A second L2 tier, shared between servers. LMCache takes --l2-adapter more than
+# once: every key is stored to every adapter, and a lookup is served by the
+# first adapter, in the order given, that holds the key. So the local tier goes
+# first (a server's own NVMe) and the shared one second (a filesystem or object
+# store every server mounts): a block comes back from local disk when this
+# server has it and from the shared tier when only another server stored it.
+#
+#   L2_SHARED     0     each server has its own L2 and nothing else (as before)
+#                 1     local tier, then the shared tier
+#                 only  the shared tier alone
+#   SHARE_GROUPS  how many shared directories there are. Servers are dealt
+#                 across them in turn, so 1 means the whole fleet shares one,
+#                 and NUM_SERVERS means nobody shares anything -- the sweep
+#                 from one to the other is how sharing is varied.
+L2_SHARED = os.environ.get("L2_SHARED", "0")
+if L2_SHARED in ("", "false", "no"):
+    L2_SHARED = "0"
+if L2_SHARED in ("true", "yes"):
+    L2_SHARED = "1"
+if L2_SHARED not in ("0", "1", "only"):
+    sys.exit(f"L2_SHARED={L2_SHARED!r} must be 0, 1 or only")
+SHARE_GROUPS = int(os.environ.get("SHARE_GROUPS", "1"))
+if not 1 <= SHARE_GROUPS <= NUM_SERVERS:
+    sys.exit(f"SHARE_GROUPS={SHARE_GROUPS} must be between 1 and NUM_SERVERS={NUM_SERVERS}")
+L2_SHARED_CAPACITY_GIB = float(os.environ.get("L2_SHARED_CAPACITY_GIB", "0"))
+L2_SHARED_DELAYS = {
+    "write_delay_ms": float(os.environ.get("L2_SHARED_WRITE_DELAY_MS", "0")),
+    "read_delay_ms": float(os.environ.get("L2_SHARED_READ_DELAY_MS", "0")),
+}
+L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values()) or \
+    (L2_SHARED != "0" and any(L2_SHARED_DELAYS.values()))
+
+
+def _l2_spec(base_path, capacity_gib, delays, shared=False, tmp_dir=None):
+    """One --l2-adapter spec: fs or fs_native, wrapped by the simulator if asked.
+
+    Setting a capacity turns eviction on, and three things have to change
+    together for LMCache to act on it -- get any one wrong and nothing is evicted:
+      * the backing adapter becomes fs_native. Plain fs declares no capacity,
+        so LMCache logs "does not support global eviction" and skips it.
+      * max_capacity_gb goes on that backing spec. It is counted in logical
+        bytes, so under dedup it bounds what the server believes it stored,
+        not the near-zero disk actually used -- which is the point of it.
+      * the "eviction" block goes on the OUTERMOST spec, the one --l2-adapter
+        parses. Inside the plugin's "inner" it is ignored without a warning.
+    """
+    eviction = {}
+    if capacity_gib:
+        eviction = {"eviction": {"eviction_policy": L2_EVICT_POLICY,
+                                 "trigger_watermark": L2_EVICT_WATERMARK,
+                                 "eviction_ratio": L2_EVICT_RATIO}}
+        # The block is repeated on the backing spec even when the plugin wraps
+        # it. It does nothing there, but fs_native otherwise warns that the
+        # capacity "will NOT bound disk usage" because it sees none on its own
+        # spec -- a false alarm when the outer block is doing the work.
+        backing = {"type": "fs_native", "base_path": base_path,
+                   "max_capacity_gb": capacity_gib, **eviction}
+    else:
+        backing = {"type": "fs", "base_path": base_path}
+    if tmp_dir:
+        # Writers to one shared directory need a temp name each. Both fs
+        # adapters default to <key>.tmp, so two servers storing the same block
+        # at once rename each other's file away and the loser logs a traceback.
+        backing["relative_tmp_dir"] = tmp_dir
+    # "shared" tells LMCache the domain is mounted by several servers, so the
+    # coordinator records one placement for a block rather than one per server.
+    flags = {"shared": True} if shared else {}
+    if L2_DEDUP or any(delays.values()):
+        return {
+            "type": "plugin",
+            "module_path": "lmcache_l2_sim.l2_sim_adapter",
+            "class_name": "L2SimAdapter",
+            "adapter_params": {
+                "inner": {**backing, **flags},
+                "dedup": L2_DEDUP,
+                "link_mode": L2_LINK_MODE,
+                "seed": int(SEED) if SEED.lstrip("-").isdigit() else 0,
+                **{k: v for k, v in delays.items() if v},
+            },
+            **flags, **eviction,
+        }
+    return {**backing, **flags}
+
+
+def l2_adapters(i):
+    """The --l2-adapter specs for server i, in lookup order: local, then shared."""
+    specs = []
+    if L2_SHARED != "only":
+        specs.append(_l2_spec("/data/l2", L2_CAPACITY_GIB, L2_DELAYS))
+    if L2_SHARED != "0":
+        specs.append(_l2_spec("/data/l2-shared", L2_SHARED_CAPACITY_GIB, L2_SHARED_DELAYS,
+                              shared=True, tmp_dir=f".tmp-server-{i}"))
+    return specs
+
+
+def share_group(i):
+    return (i - 1) % SHARE_GROUPS + 1
+
+
 # plugins/ holds one directory per publishable distribution, so the directory
 # itself is not importable -- each plugin's own directory is. Build PYTHONPATH
 # from every subdirectory carrying a pyproject.toml, so adding a plugin needs no
@@ -542,10 +620,46 @@ RESTORE_INTERVAL = float(os.environ.get("RESTORE_INTERVAL", "0.2"))
 RESTORE_MIN_HIT_RATE = float(os.environ.get("RESTORE_MIN_HIT_RATE", "0"))
 _SCRIPTS_MOUNT = "/opt/lmcache-fleet/scripts"
 
+# Trace replay: trace-N replays its server's share of one token trace, built by
+# scripts/traces.py from real agent sessions or synthesised. Every trace-N
+# computes the same schedule from the trace, then keeps the requests routed to
+# its own server, so the fleet as a whole replays the trace once.
+TRACE = os.environ.get("TRACE", "").strip("/")
+TRACE_ROUTE = os.environ.get("TRACE_ROUTE", "session")
+if TRACE_ROUTE not in ("session", "group", "request"):
+    sys.exit(f"TRACE_ROUTE={TRACE_ROUTE!r} must be session, group or request")
+TRACE_LANES = int(os.environ.get("TRACE_LANES", "8"))
+TRACE_SPEEDUP = float(os.environ.get("TRACE_SPEEDUP", "1"))
+TRACE_IDLE_CAP = float(os.environ.get("TRACE_IDLE_CAP", "60"))
+TRACE_DURATION = float(os.environ.get("TRACE_DURATION", "0"))
+TRACE_SESSIONS = int(os.environ.get("TRACE_SESSIONS", "0"))
+TRACE_MIN_HIT_RATE = float(os.environ.get("TRACE_MIN_HIT_RATE", "0"))
+TRACE_RUN = os.environ.get("TRACE_RUN", "latest")
+# A real prompt is 100k tokens, not the 512 the synthetic stimulators send, and
+# at the default shape that would be 400 MiB of KV per request. The trace shape
+# keeps a chunk at 8 KiB so a whole session fits in memory; 8192 blocks of 16
+# tokens bound a prompt at 131072 tokens, and longer ones are truncated.
+TRACE_SHAPE = os.environ.get("TRACE_SHAPE", "(2,8192,16,1,8):float16:1")
+_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "data", "traces", TRACE)
+if TRACE and not os.path.isfile(os.path.join(_TRACE_DIR, "index.jsonl")):
+    sys.exit(f"TRACE={TRACE}: no token trace at {_TRACE_DIR} "
+             "(make trace-synth or make trace-exgentic builds one)")
+
 servers, stimulators = [], []
 
 for i in range(1, NUM_SERVERS + 1):
     name = f"lmcache-server-{i}"
+    l2_flags = "\n".join(
+        f"      --l2-adapter '{json.dumps(spec, separators=(',', ':'))}'"
+        for spec in l2_adapters(i))
+    l2_volumes = ""
+    if L2_SHARED != "only":
+        l2_volumes += (f"      - ../data/l2-server-{i}:/data/l2"
+                       "              # this server's own L2\n")
+    if L2_SHARED != "0":
+        l2_volumes += (f"      - ../data/l2-shared-{share_group(i)}:/data/l2-shared"
+                       "       # the L2 its share group has in common\n")
     servers.append(f"""  {name}:
     image: {IMAGE}
     hostname: {name}
@@ -555,8 +669,7 @@ for i in range(1, NUM_SERVERS + 1):
     ports:
       - "127.0.0.1:{HTTP_BASE + i - 1}:8080"   # HTTP API on host for /status, /cache/objects
     volumes:
-      - ../data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
-{L2_PLUGIN_MOUNT}{QUIET_MOUNT}    healthcheck:
+{l2_volumes}{L2_PLUGIN_MOUNT}{QUIET_MOUNT}    healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck',timeout=2)"]
       interval: 5s
@@ -576,7 +689,7 @@ for i in range(1, NUM_SERVERS + 1):
       --coordinator-url http://coordinator:{COORD_NET_PORT}
       --coordinator-advertise-ip {name}
       --coordinator-event-reporting
-      --l2-adapter '{L2_ADAPTER_JSON}'
+{l2_flags}
 """)
 
     # Everything a client of server i needs, whichever operation it runs.
@@ -602,23 +715,42 @@ for i in range(1, NUM_SERVERS + 1):
       --rpc-url tcp://{name}:5555
       --url {STIM_URL or f"http://{name}:8080"}
       --mode cpu --transfer-mode lmcache_driven
-      --kvcache-shape-spec "{SHAPE_SPEC}"
+"""
+    _window = f"""      --kvcache-shape-spec "{SHAPE_SPEC}"
       --num-tokens {NUM_TOKENS}
       --start {windows[i - 1][0]} --end {windows[i - 1][1]}
 """
     stimulators.append(f"""  stim-{i}:
     image: {IMAGE}
     profiles: [stim]
-{_client}      --op {STIM_OP} --interval {STIM_INTERVAL:g}
+{_client}{_window}      --op {STIM_OP} --interval {STIM_INTERVAL:g}
 """)
     # Its own client index, so a restore running alongside the store does not
     # register its workers under the ids the store client already holds.
     stimulators.append(f"""  restore-{i}:
     image: {IMAGE}
     profiles: [restore]
-{_client}      --op restore --client-index 1
+{_client}{_window}      --op restore --client-index 1
       --order {RESTORE_ORDER} --count {RESTORE_COUNT} --seed {i}
       --interval {RESTORE_INTERVAL:g} --min-hit-rate {RESTORE_MIN_HIT_RATE:g}
+""")
+    if TRACE:
+        # The trace and the run's logs are extra mounts, so the shared client
+        # block gets them spliced in after the scripts mount.
+        _trace_client = _client.replace(
+            f"      - ../scripts:{_SCRIPTS_MOUNT}:ro\n",
+            f"      - ../scripts:{_SCRIPTS_MOUNT}:ro\n"
+            f"      - ../data/traces/{TRACE}:/trace:ro\n"
+            f"      - ../data/trace-runs/{TRACE_RUN}:/run\n")
+        stimulators.append(f"""  trace-{i}:
+    image: {IMAGE}
+    profiles: [trace]
+{_trace_client}      --kvcache-shape-spec "{TRACE_SHAPE}"
+      --op trace --client-index 2 --trace /trace --trace-name {TRACE}
+      --shard {i - 1} --shards {NUM_SERVERS} --route {TRACE_ROUTE}
+      --lanes {TRACE_LANES} --speedup {TRACE_SPEEDUP:g} --idle-cap {TRACE_IDLE_CAP:g}
+      {f"--duration {TRACE_DURATION:g} " if TRACE_DURATION else ""}{f"--max-sessions {TRACE_SESSIONS} " if TRACE_SESSIONS else ""}--min-hit-rate {TRACE_MIN_HIT_RATE:g}
+      --log /run/trace-{i}.jsonl
 """)
 
 compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
@@ -747,7 +879,11 @@ here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # invoking user by default, so owner-only write is enough; only fall back to
 # world-writable when RUN_UID has been overridden to someone else.
 BIND_MODE = 0o755 if str(os.getuid()) == RUN_UID else 0o777
-for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
+for sub in (([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
+             if L2_SHARED != "only" else [])
+            + ([f"l2-shared-{g}" for g in range(1, SHARE_GROUPS + 1)]
+               if L2_SHARED != "0" else [])
+            + ([os.path.join("trace-runs", TRACE_RUN)] if TRACE else [])
             + ["prometheus", "grafana", "exporter"]
             + (["coordinator"] if COORD_CHECKPOINT else [])):
     d = os.path.join(here, "data", sub)
@@ -784,16 +920,29 @@ for _i, (_s, _e) in enumerate(windows, 1):
           f"blocks [{_s * BLOCKS_PER_SEQ},{_e * BLOCKS_PER_SEQ})")
 print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
       f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")
-if L2_PLUGIN:
-    _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
-    print(f"L2: {_fs_spec['type']} wrapped by lmcache_l2_sim "
-          f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
-          f"{' — L2 contents are fake, checksum verification off' if L2_DEDUP else ''}")
-else:
-    print(f"L2: {_fs_spec['type']} (real bytes on disk)")
-if L2_CAPACITY_GIB:
-    print(f"L2 eviction: {L2_EVICT_POLICY} at {L2_EVICT_WATERMARK:.0%} of "
-          f"{L2_CAPACITY_GIB:g} GiB logical per server, "
-          f"evicting {L2_EVICT_RATIO:.0%} each time")
-else:
-    print("L2 eviction: off (L2_CAPACITY_GIB=0), L2 grows without bound")
+for _spec in l2_adapters(1):
+    _inner = _spec.get("adapter_params", {}).get("inner", _spec)
+    _shared = "shared" if _spec.get("shared") else "local"
+    _how = "real bytes on disk"
+    if _spec["type"] == "plugin":
+        _params = _spec["adapter_params"]
+        _delays = ", ".join(f"{k}={v:g}" for k, v in _params.items()
+                            if k.endswith("_ms") or k.endswith("_mb")) or "no delay"
+        _how = (f"wrapped by lmcache_l2_sim (dedup="
+                f"{'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
+                f"{' — contents are fake, checksum verification off' if L2_DEDUP else ''}")
+    _cap = _inner.get("max_capacity_gb")
+    _evict = (f"{L2_EVICT_POLICY} eviction at {L2_EVICT_WATERMARK:.0%} of "
+              f"{_cap:g} GiB logical per server, {L2_EVICT_RATIO:.0%} each time"
+              if _cap else "no capacity, grows without bound")
+    print(f"L2 {_shared}: {_inner['type']}, {_how}; {_evict}")
+if L2_SHARED != "0":
+    _groups = {}
+    for _i in range(1, NUM_SERVERS + 1):
+        _groups.setdefault(share_group(_i), []).append(_i)
+    print(f"L2 sharing: {SHARE_GROUPS} shared director{'y' if SHARE_GROUPS == 1 else 'ies'}: "
+          + "; ".join(f"l2-shared-{g} <- servers {','.join(map(str, m))}"
+                      for g, m in sorted(_groups.items())))
+if TRACE:
+    print(f"trace: {TRACE}, route={TRACE_ROUTE}, {TRACE_LANES} lanes, "
+          f"speedup {TRACE_SPEEDUP:g}, logs in data/trace-runs/{TRACE_RUN}/")
