@@ -92,6 +92,7 @@ ENV_DOCS = {
     "PAGE_SIZE": ("Exporter (set on the service)", "keys per directory page"),
     "EXPORTER_PORT": ("Exporter (set on the service)", "port /metrics is served on"),
     "MISSING_POLLS": ("Exporter (set on the service)", "absences before a placement counts as gone"),
+    "TOP_REUSED": ("Exporter (set on the service)", "most-reused keys published individually by hash; 0 = off"),
     "STATE_PATH": ("Exporter (set on the service)", "where first-seen times are checkpointed"),
     "STATE_SAVE_INTERVAL": ("Exporter (set on the service)", "seconds between checkpoints"),
     "AGE_BOUNDS": ("Exporter (set on the service)", "age bucket bounds, comma-separated durations"),

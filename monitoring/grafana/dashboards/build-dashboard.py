@@ -94,6 +94,54 @@ def stat(title, expr, unit, x, y, w=6, h=4, desc=""):
         "targets": [{"refId": "A", "datasource": DS, "expr": expr, "instant": False}],
     }
 
+def table(title, targets, x, y, w=24, h=11, desc="", sort_by=None,
+          rename=None, units=None, widths=None, order=None):
+    """A table of current values, one row per series.
+
+    Instant queries in table format, so each series' labels become columns and
+    its value the last column. Several queries are merged into one table by
+    their shared label columns, which is how two metrics with identical labels
+    -- a count and an age, say -- end up as two columns of one row.
+    """
+    rename = rename or {}
+    overrides = [{"matcher": {"id": "byName", "options": name},
+                  "properties": [{"id": "unit", "value": unit}]}
+                 for name, unit in (units or {}).items()]
+    overrides += [{"matcher": {"id": "byName", "options": name},
+                   "properties": [{"id": "custom.width", "value": width}]}
+                  for name, width in (widths or {}).items()]
+    return {
+        "id": nid(), "type": "table", "title": title, "description": desc,
+        "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "fieldConfig": {
+            "defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"},
+                                    "inspect": False},
+                         "color": {"mode": "thresholds"},
+                         "thresholds": {"mode": "absolute",
+                                        "steps": [{"color": "text", "value": None}]}},
+            "overrides": overrides,
+        },
+        "options": {"showHeader": True, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "countRows": False,
+                               "fields": ""},
+                    "sortBy": ([{"displayName": sort_by, "desc": False}]
+                               if sort_by else [])},
+        "transformations": [
+            # Merge first: it is what folds the per-metric frames into single
+            # rows on their common label columns.
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {
+                "excludeByName": {"Time": True},
+                "renameByName": rename,
+                # Keyed by the ORIGINAL field name, before renameByName.
+                "indexByName": {n: i for i, n in enumerate(order or [])}}},
+        ],
+        "targets": [{"refId": chr(65 + i), "datasource": DS, "expr": e,
+                     "format": "table", "instant": True, "legendFormat": lf}
+                    for i, (e, lf) in enumerate(targets)],
+    }
+
+
 def heatmap(title, expr, x, y, w=12, h=11, desc=""):
     """Age distribution over time, bucketed at query time from the histogram.
 
@@ -341,6 +389,29 @@ panels = [
             "here. Shown under the name the instance had; 'unknown' is one "
             "the exporter never saw registered. Empty on a fleet that has "
             "not been restarted."),
+    table("Most Reused Blocks",
+          # summed by the three labels that matter, which is also what strips
+          # __name__, job, instance and component. Those differ between the two
+          # metrics -- __name__ always does -- and any differing column stops
+          # the merge from folding the pair into one row.
+          [('sum by (rank, hash, location) (lmcache_directory_top_reused_accesses)', ""),
+           ('sum by (rank, hash, location) (lmcache_directory_top_reused_age_seconds)', "")],
+          0, 85, h=12,
+          sort_by="Rank",
+          order=["rank", "hash", "location", "Value #A", "Value #B"],
+          rename={"rank": "Rank", "hash": "Hash", "location": "Location",
+                  "Value #A": "Accesses", "Value #B": "Age"},
+          units={"Age": "s"},
+          widths={"Rank": 70, "Hash": 170, "Accesses": 110, "Age": 110},
+          desc="The blocks the coordinator has served most often, named "
+               "individually rather than bucketed: the first 16 hex of the "
+               "chunk hash, every server and tier holding a copy, how many "
+               "times it has been served, and the age of its oldest copy. "
+               "Everything else in this row is an aggregate, because a series "
+               "per key would be a cardinality disaster; this is bounded by "
+               "TOP_REUSED (default 10). Ties break by hash so the order does "
+               "not shuffle between polls. The two metrics carry identical "
+               "labels, which is what lets them merge into one row."),
     ts("L2 Logical Bytes Left by Departed Instances",
        [('sum by (server) (lmcache_directory_departed_placement_bytes{tier="l2",server=~"$server"})',
          "{{server}}")],

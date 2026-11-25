@@ -37,6 +37,12 @@ PORT = int(os.environ.get("EXPORTER_PORT", "9105"))
 # A placement must be absent from this many consecutive polls before it counts
 # as removed: offset paging over a changing directory can skip an entry.
 MISSING_POLLS = int(os.environ.get("MISSING_POLLS", "2"))
+# How many of the most-reused keys to publish individually, with their hash,
+# where they sit and how old they are. Everything else here is an aggregate,
+# because a per-key series for a directory of this size would be a cardinality
+# disaster; this is bounded at N, but the hash and location labels still churn
+# as the ranking moves, so keep it small. 0 turns it off.
+TOP_REUSED = int(os.environ.get("TOP_REUSED", "10"))
 # Where first-seen times are checkpointed. Without this every restart would
 # reset each block to age zero, which is ruinous mid-experiment. Set empty to
 # disable. Times are wall-clock, so they survive across processes.
@@ -207,6 +213,10 @@ def poll(state):
     replicas, tier_sets, access = {}, {}, {}
     departed_pids, departed_ids = set(), set()
     departed_count, departed_bytes = {}, {}
+    # Only the current top few are kept, but the ranking is not known until the
+    # last page has been read, so every key's hash, holders and pids are held
+    # until then. Dropped as soon as the top N is picked.
+    reuse = []
     offset = 0
     while True:
         page = get(f"/directory/keys?limit={PAGE_SIZE}&offset={offset}")
@@ -234,6 +244,11 @@ def poll(state):
                 tier_sets[ts] = tier_sets.get(ts, 0) + 1
             else:
                 departed_only += 1
+            if TOP_REUSED and held:
+                reuse.append((k.get("access_count", 0), ident["chunk_hash_hex"],
+                              sorted({(live[p["instance_id"]], p["tier"]) for p in held}),
+                              [kid + (p["instance_id"], p["tier"], p.get("backend", ""))
+                               for p in held]))
             for p in placements:
                 inst, tier, backend = p["instance_id"], p["tier"], p.get("backend", "")
                 pid = kid + (inst, tier, backend)
@@ -368,6 +383,26 @@ def poll(state):
         metric(P + "keys_departed_only", "gauge",
                "Keys whose every placement is owned by a departed instance.",
                [({}, departed_only)])
+        # The most-reused keys, named individually: hash, where the copies sit,
+        # how old the oldest copy is. Ties are broken by hash so the ranking is
+        # stable between polls rather than shuffling among equal counts.
+        top = sorted(reuse, key=lambda r: (-r[0], r[1]))[:TOP_REUSED]
+        rank_samples, rank_ages = [], []
+        for position, (accesses, chunk_hash, places, pids) in enumerate(top, 1):
+            labels = {
+                "rank": f"{position:02d}",
+                "hash": chunk_hash[:16],
+                "location": ", ".join(f"{s} {t}" for s, t in places),
+            }
+            rank_samples.append((labels, accesses))
+            ages_seen = [now - state.first_seen[p] for p in pids if p in state.first_seen]
+            rank_ages.append((labels, round(max(ages_seen), 1) if ages_seen else 0))
+        metric(P + "top_reused_accesses", "gauge",
+               "Access count of the most-reused keys, by hash and where they sit. "
+               "Rank is zero-padded so it sorts as a string.", rank_samples)
+        metric(P + "top_reused_age_seconds", "gauge",
+               "Age of the oldest copy of each of those keys, labelled "
+               "identically so the two can be shown as one table.", rank_ages)
         metric(P + "keys_by_access_count", "gauge", "Keys by coordinator-reported access count.",
                [({"accesses": label}, access.get(label, 0)) for label, _ in ACCESS_BUCKETS])
         metric(P + "placements_added_total", "counter",

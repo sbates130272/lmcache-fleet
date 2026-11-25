@@ -4359,6 +4359,177 @@
     },
     {
       "id": 29,
+      "type": "table",
+      "title": "Most Reused Blocks",
+      "description": "The blocks the coordinator has served most often, named individually rather than bucketed: the first 16 hex of the chunk hash, every server and tier holding a copy, how many times it has been served, and the age of its oldest copy. Everything else in this row is an aggregate, because a series per key would be a cardinality disaster; this is bounded by TOP_REUSED (default 10). Ties break by hash so the order does not shuffle between polls. The two metrics carry identical labels, which is what lets them merge into one row.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 137
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Rank"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hash"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Accesses"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Age"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Rank",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "rank": "Rank",
+              "hash": "Hash",
+              "location": "Location",
+              "Value #A": "Accesses",
+              "Value #B": "Age"
+            },
+            "indexByName": {
+              "rank": 0,
+              "hash": 1,
+              "location": 2,
+              "Value #A": 3,
+              "Value #B": 4
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (rank, hash, location) (lmcache_directory_top_reused_accesses)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (rank, hash, location) (lmcache_directory_top_reused_age_seconds)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "id": 30,
       "type": "timeseries",
       "title": "L2 Logical Bytes Left by Departed Instances",
       "description": "Bytes behind the panel on the left. No running server counts these towards its L2 usage, so nothing evicts them: they stay until the L2 directory is cleared.",
