@@ -1906,7 +1906,7 @@
       "id": 14,
       "type": "timeseries",
       "title": "Lookup Hit Tokens/Second by Tier",
-      "description": "Which tier served the hits, fleet-wide.",
+      "description": "Which tier served the hits, fleet-wide. Tokens, not bytes and not requests, so the numbers are larger than the request rate by the tokens per request: NUM_TOKENS=512 at 3.8 lookups/s reads as ~1950/s. The axis unit is Grafana's generic counts-per-second, so it renders as c/s. Bytes would be larger still \u2014 a chunk here is about 1 MiB, so the same rate in bytes would be ~7.6 MiB/s.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
@@ -2808,7 +2808,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "L2 Blocks by Age",
-      "description": "How long each L2 block has existed, in the exporter's named age bands. Age is time since the exporter first saw the block; it checkpoints these so a restart no longer resets them. Colours assume the default seven bands \u2014 if you override AGE_BOUNDS, read the heatmap below instead, which follows any bounds.",
+      "description": "How long each L2 block has existed, in the exporter's named age bands. Age is time since the exporter first saw the block; it checkpoints these so a restart no longer resets them. Bands are the default seven, as both the colours and the ordering need to know them ahead of time \u2014 if you override AGE_BOUNDS, read the heatmap below instead, which follows any bounds.",
       "datasource": {
         "type": "prometheus",
         "uid": "lmcache-prom"
@@ -2982,8 +2982,62 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l2\",server=~\"$server\"})",
-          "legendFormat": "{{age}}"
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"0-5m\",server=~\"$server\"})",
+          "legendFormat": "0-5m"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"5-30m\",server=~\"$server\"})",
+          "legendFormat": "5-30m"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"30m-1h\",server=~\"$server\"})",
+          "legendFormat": "30m-1h"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"1-2h\",server=~\"$server\"})",
+          "legendFormat": "1-2h"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"2-4h\",server=~\"$server\"})",
+          "legendFormat": "2-4h"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"4-8h\",server=~\"$server\"})",
+          "legendFormat": "4-8h"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l2\",age=\"8h+\",server=~\"$server\"})",
+          "legendFormat": "8h+"
         }
       ]
     },
@@ -3365,8 +3419,62 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (age) (lmcache_directory_placements_by_age{tier=\"l1\",server=~\"$server\"})",
-          "legendFormat": "{{age}}"
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"0-5m\",server=~\"$server\"})",
+          "legendFormat": "0-5m"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"5-30m\",server=~\"$server\"})",
+          "legendFormat": "5-30m"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"30m-1h\",server=~\"$server\"})",
+          "legendFormat": "30m-1h"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"1-2h\",server=~\"$server\"})",
+          "legendFormat": "1-2h"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"2-4h\",server=~\"$server\"})",
+          "legendFormat": "2-4h"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"4-8h\",server=~\"$server\"})",
+          "legendFormat": "4-8h"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_placements_by_age{tier=\"l1\",age=\"8h+\",server=~\"$server\"})",
+          "legendFormat": "8h+"
         }
       ]
     },
@@ -4014,8 +4122,44 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "sum by (accesses) (lmcache_directory_keys_by_access_count)",
-          "legendFormat": "{{accesses}}"
+          "expr": "sum (lmcache_directory_keys_by_access_count{accesses=\"0\"})",
+          "legendFormat": "0"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_keys_by_access_count{accesses=\"1-2\"})",
+          "legendFormat": "1-2"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_keys_by_access_count{accesses=\"3-5\"})",
+          "legendFormat": "3-5"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_keys_by_access_count{accesses=\"6-10\"})",
+          "legendFormat": "6-10"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum (lmcache_directory_keys_by_access_count{accesses=\"11+\"})",
+          "legendFormat": "11+"
         }
       ]
     },
