@@ -46,7 +46,9 @@ def nid():
 SEQ_BLUES = ["#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef", "#9ec5f4", "#cde2fb"]
 # Keep in step with AGE_BUCKETS in monitoring/exporter/directory_exporter.py.
 AGE_LABELS = ["0-5m", "5-30m", "30m-1h", "1-2h", "2-4h", "4-8h", "8h+"]
-AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES)]
+# strict: the comment above asks these to stay in step with the exporter's
+# bands, and a silent zip would just drop the band nobody gave a colour.
+AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES, strict=True)]
 
 
 # One target per band rather than a single `sum by (age)`. Grafana sorts the
@@ -69,7 +71,8 @@ def age_targets(tier):
 
 
 ACCESS_LABELS = ["0", "1-2", "3-5", "6-10", "11+"]
-ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i]) for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6))]
+ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i])
+                    for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6), strict=True)]
 REPLICA_OVERRIDES = [color("1 Server", "#3987e5"), color("2 Servers", "#d95926"),
                      color("3+ Servers", "#199e70")]
 CHURN_OVERRIDES = [color(f"{T1} Added", "#3987e5"), color(f"{T2} Added", "#d95926"),

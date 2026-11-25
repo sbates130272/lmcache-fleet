@@ -16,6 +16,8 @@
 [![Docker Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-docker-lint.yml?label=docker-lint&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-docker-lint.yml)
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
+[![Ruff](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-ruff.yml?label=ruff&style=flat-square&logo=ruff&logoColor=white)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-ruff.yml)
+[![Python Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-python-check.yml?label=python-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-python-check.yml)
 [![Package Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-package-check.yml?label=package-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-package-check.yml)
 [![Released Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-released-check.yml?branch=main&label=released-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-released-check.yml)
 
@@ -314,6 +316,14 @@ The coordinator's own *metrics* have no per-server view of L2:
 `main` as well as v0.5.8. The per-server L2 numbers therefore come from the
 directory exporter, which reads them from the directory listing instead.
 
+**The most reused blocks, named.** Everything else the exporter publishes is
+an aggregate, because a series per key over a directory of this size would be
+a cardinality disaster. The "Most Reused Blocks" table is the exception: the
+top `TOP_REUSED` keys (10; 0 disables) by access count, each with its chunk
+hash, every server and tier holding a copy, and the age of its oldest copy.
+Ties break by hash so the ranking does not shuffle between polls. The hash and
+location labels still churn as the ranking moves, which is why it stays small.
+
 **Restarted servers.** A server takes a new instance id every time it starts.
 When one leaves, the coordinator drops its L1 placements but keeps its L2 ones
 on purpose — L2 outlives the process — so the directory goes on listing L2
@@ -346,13 +356,65 @@ listing: every server registered, keys tracked, and *each* server holding both
 L1 and L2 placements. The per-server split is the part worth asserting — a
 fleet where one server absorbed every store still shows healthy totals.
 
+Both stimulators print a progress line every `--progress-every` seconds (15,
+0 to disable) and one JSON summary when they finish — requests, chunks hit,
+stored and retrieved, hit rate and per-operation p50/p99:
+
+```bash
+make logs                     # follows every service, stimulators included
+docker compose -f docker/docker-compose.yml --profile stim --profile restore \
+  logs | grep '{"op"'         # just the summaries
+```
+
+`make logs` names both profiles explicitly: a service behind a compose profile
+is invisible to `compose logs` otherwise, which is how the stimulators —
+the only place those summaries appear — used to be filtered out.
+
+## Quieter Logs
+
+Prometheus scrapes `/metrics`, compose probes `/healthcheck`, the servers
+heartbeat and the exporter pages `/directory/keys`, all every few seconds and
+all logged by uvicorn at INFO. Measured over three minutes on a two-server
+fleet: ~330 lines from the coordinator alone, ~72 from each server.
+
+LMCache hardcodes `access_log=True` with no flag to turn it down, so
+[docker/quiet/sitecustomize.py](docker/quiet/sitecustomize.py) goes on
+`PYTHONPATH` instead — Python imports a module of that name at interpreter
+startup, early enough to attach a filter to the access logger. Only polled
+paths returning under 400 are dropped, so a failing healthcheck or a 404 on
+`/metrics` still prints.
+
+`QUIET_ACCESS_LOG=0` turns it off, `QUIET_ACCESS_PATHS` overrides the list
+(an entry starting with `*` matches as a suffix, which is how heartbeats go
+without taking `POST /instances` with them), and `GRAFANA_LOG_LEVEL` sets
+Grafana's own.
+
 ## Continuous Integration
 
-Five lanes, all on GitHub-hosted `ubuntu-24.04`. Four are cheap PR gates —
+Eight lanes, all on GitHub-hosted `ubuntu-24.04`. Six are cheap PR gates —
 codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, hadolint
 plus `docker compose config` on the Dockerfile and the *generated* compose file
-(both the stock and `L2_DEDUP=1` variants, since dedup takes a different branch
-in the generator), and the packaging lane below.
+(both the stock and `L2_CAPACITY_GIB` variants, since a capacity swaps the
+backing adapter), ruff and the Python lane below, and the packaging one after.
+
+`lmcache-fleet - Ruff` lints every tracked `.py` against
+[ruff.toml](ruff.toml). Both the ruff version and the rule selection are
+pinned, because ruff widens its defaults between releases and neither should
+be able to fail the lane on code nobody touched. `E501` is deliberately out of
+the selection, as it is from ruff's own default `E` subset: line length is a
+formatter's job and this repo runs no formatter. Two rules are switched off
+with the reasons recorded in the config — `SIM105`, because the two
+`try/except/pass` sites are hot loops where `contextlib.suppress` would
+allocate per iteration, and `I001` for the plugin, which keeps LMCache's own
+import grouping so it stays upstreamable.
+
+`lmcache-fleet - Python Check` asserts the committed dashboard JSON still
+matches `build-dashboard.py`, and unit-checks the access-log filter. The first
+is the reason the lane exists: the dashboard is generated *and* committed, so
+editing the builder without regenerating leaves it silently on the old panels
+with a clean-looking diff. The filter check matters for the same reason — a
+broken `sitecustomize.py` does not stop a container starting, so the smoke
+test would stay green while the logs quietly went back to being noisy.
 
 `lmcache-fleet - Package Check` runs `make dist` and `make publish-precheck`,
 then exercises both halves of the publish path without touching PyPI: it

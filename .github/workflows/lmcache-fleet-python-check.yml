@@ -1,0 +1,73 @@
+name: lmcache-fleet - Python Check
+
+# PR only, like the other lint lanes: every commit reaches main through a PR
+# merge, so a post-merge run would re-check a tree this already passed on.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python-check:
+    name: lmcache-fleet - Python Check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # No byte-compile step: the Ruff lane's E9 rules cover syntax, and
+      # duplicating it here would just mean two lanes going red for one typo.
+      # The dashboard JSON is generated and committed, and nothing but habit
+      # kept the two in step: edit the builder, forget to regenerate, and the
+      # dashboard silently stays on the old panels while the diff looks fine.
+      - name: Dashboard JSON matches its builder
+        run: |
+          python3 monitoring/grafana/dashboards/build-dashboard.py > /tmp/dashboard.json
+          if ! diff -q /tmp/dashboard.json monitoring/grafana/dashboards/lmcache-fleet.json; then
+            echo "::error::lmcache-fleet.json is out of step with build-dashboard.py." \
+                 "Run: python3 monitoring/grafana/dashboards/build-dashboard.py >" \
+                 "monitoring/grafana/dashboards/lmcache-fleet.json"
+            diff /tmp/dashboard.json monitoring/grafana/dashboards/lmcache-fleet.json | head -40
+            exit 1
+          fi
+          echo "in step"
+
+      # The access-log filter is imported by every lmcache container at
+      # interpreter startup. If it raised, the containers would still come up
+      # -- Python reports a failing sitecustomize and carries on -- so the
+      # smoke test would stay green while the logs went back to being noisy.
+      - name: Access-log filter behaves
+        run: |
+          PYTHONPATH=docker/quiet python3 - <<'PY'
+          import sitecustomize as s
+          cases = {"/healthcheck": True, "/metrics": True,
+                   "/directory/keys?limit=1000&offset=0": True,
+                   "/instances/abc-123/heartbeat": True,
+                   "/instances": False, "/status": False, "/cache/pins": False}
+          bad = {p: got for p, want in cases.items()
+                 if (got := s.is_polled(p)) is not want}
+          assert not bad, f"wrong polled verdict: {bad}"
+          # A record shaped like uvicorn's, so the filter is exercised rather
+          # than just its path matcher: polled and fine is dropped, polled but
+          # failing is kept.
+          import logging
+          f = s.DropPolledPaths()
+          def rec(path, status):
+              return logging.LogRecord("uvicorn.access", logging.INFO, "", 0,
+                                       '%s - "%s %s HTTP/%s" %d',
+                                       ("1.2.3.4:5", "GET", path, "1.1", status), None)
+          assert f.filter(rec("/healthcheck", 200)) is False, "200 healthcheck should drop"
+          assert f.filter(rec("/healthcheck", 503)) is True, "failing healthcheck must print"
+          assert f.filter(rec("/cache/pins", 200)) is True, "real traffic must print"
+          print("filter ok")
+          PY
