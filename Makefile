@@ -190,7 +190,7 @@ down: ## Stop and remove the fleet containers
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"
-	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana ./data/exporter
+	rm -rf ./data/l2-server-* ./data/prometheus ./data/grafana ./data/exporter ./data/coordinator
 
 ##@ Help
 

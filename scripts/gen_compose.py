@@ -78,6 +78,8 @@ ENV_DOCS = {
     "PROM_RETENTION": ("Monitoring", "how long metric history is kept"),
     "GRAFANA_PORTS": ("Monitoring", "host port range Grafana may bind"),
     "GRAFANA_LOG_LEVEL": ("Monitoring", "Grafana log level: debug, info, warn or error"),
+    "COORD_CHECKPOINT": ("Fleet", "1 = checkpoint the coordinator's directory so a restart resumes"),
+    "COORD_CHECKPOINT_INTERVAL": ("Fleet", "seconds between checkpoint writes; 0 = only on a clean stop"),
     "QUIET_ACCESS_LOG": ("Monitoring", "1 = drop uvicorn access lines for polled paths"),
     "QUIET_ACCESS_PATHS": ("Monitoring", "comma-separated path prefixes treated as polled"),
     "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
@@ -395,6 +397,16 @@ PLUGIN_PYTHONPATH = ":".join(f"{_PLUGIN_MOUNT}/{name}" for name in PLUGIN_DIRS)
 # goes on PYTHONPATH instead: Python imports a module of that name at startup,
 # early enough to attach a filter to the access logger. It drops only polled
 # paths that returned under 400, so a failing healthcheck still prints.
+# The coordinator's key directory is derived state rebuilt from the servers'
+# cache events, so losing it costs hit rate rather than correctness -- but a
+# restart otherwise starts cold, and on a fleet that has stored for an hour
+# that means the dashboard and `make report` read empty until the servers
+# report again. Checkpointing it into the data tree makes a restart resume.
+# Operator-set state (L2 pins, per-cache_salt quotas) is separate and written
+# only when it changes, hence the second path.
+COORD_CHECKPOINT = os.environ.get("COORD_CHECKPOINT", "1") not in ("0", "", "false", "no")
+COORD_CHECKPOINT_INTERVAL = os.environ.get("COORD_CHECKPOINT_INTERVAL", "60")
+
 QUIET_ACCESS_LOG = os.environ.get("QUIET_ACCESS_LOG", "1")
 _QUIET_MOUNT = "/opt/lmcache-fleet/quiet"
 _PYTHONPATH = ([_QUIET_MOUNT] if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else []) \
@@ -404,7 +416,17 @@ _PYTHONPATH = ([_QUIET_MOUNT] if QUIET_ACCESS_LOG not in ("0", "", "false", "no"
 QUIET_MOUNT = (f"      - ../docker/quiet:{_QUIET_MOUNT}:ro      # access-log filter\n"
                if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else "")
 PY_ENV = f"      PYTHONPATH: {':'.join(_PYTHONPATH)}\n" if _PYTHONPATH else ""
-COORD_VOLUMES = f"    volumes:\n{QUIET_MOUNT}" if QUIET_MOUNT else ""
+# Both files live in the data tree, so `make clean` takes them with the rest
+# of the run's state rather than leaving a stale directory to be resumed from.
+COORD_STATE_MOUNT = ("      - ../data/coordinator:/state            "
+                     "# checkpointed key directory, pins and quotas\n"
+                     if COORD_CHECKPOINT else "")
+COORD_FLAGS = (f"      --checkpoint-path /state/checkpoint.json\n"
+               f"      --checkpoint-interval {COORD_CHECKPOINT_INTERVAL}\n"
+               f"      --metadata-path /state/metadata.json\n"
+               if COORD_CHECKPOINT else "")
+_coord_vols = QUIET_MOUNT + COORD_STATE_MOUNT
+COORD_VOLUMES = f"    volumes:\n{_coord_vols}" if _coord_vols else ""
 # The coordinator loads no plugins, so it gets the quiet path only rather than
 # a PYTHONPATH naming a plugins mount it does not have.
 COORD_ENV = f"      PYTHONPATH: {_QUIET_MOUNT}\n" if QUIET_MOUNT else ""
@@ -627,6 +649,7 @@ services:
       --host 0.0.0.0 --port {COORD_NET_PORT}
       --chunk-size {CHUNK_SIZE}
       --instance-timeout 30
+{COORD_FLAGS}
 
   prometheus:
     image: {PROM_IMAGE}
@@ -724,7 +747,8 @@ here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # world-writable when RUN_UID has been overridden to someone else.
 BIND_MODE = 0o755 if RUN_UID == str(os.getuid()) else 0o777
 for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
-            + ["prometheus", "grafana", "exporter"]):
+            + ["prometheus", "grafana", "exporter"]
+            + (["coordinator"] if COORD_CHECKPOINT else [])):
     d = os.path.join(here, "data", sub)
     os.makedirs(d, exist_ok=True)
     os.chmod(d, BIND_MODE)

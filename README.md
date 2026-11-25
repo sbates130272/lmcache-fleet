@@ -65,7 +65,8 @@ scripts/     gen_compose.py (writes the compose file), stim.py (the stimulator),
              report.sh, check_fleet.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
-data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
+data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter
+             state, coordinator checkpoint
 ```
 
 ## The Image
@@ -216,6 +217,29 @@ Tokens/Second by Tier" splits the hits by tier.
 
 Each server has its own L2 directory, so a restore only finds what *its*
 server stored: `restore-N` reads the window `stim-N` wrote.
+
+## Surviving a Coordinator Restart
+
+The coordinator's key directory is derived state, rebuilt from the cache
+events the servers report, so losing it costs hit rate rather than
+correctness. But a restart otherwise starts cold, and on a fleet that has been
+storing for an hour that means the dashboard and `make report` read empty
+until the servers report again.
+
+`COORD_CHECKPOINT` (on by default) points `--checkpoint-path` at
+`data/coordinator/checkpoint.json`, written every
+`COORD_CHECKPOINT_INTERVAL` seconds (60; 0 writes only on a clean stop).
+`--metadata-path` goes beside it for operator-set state — L2 pins and
+per-`cache_salt` quotas — which is written when it changes rather than on a
+timer, so the file only appears once something sets one.
+
+Verified by storing 80 keys, killing the coordinator with `SIGKILL` so there
+was no clean stop, and restarting it: the directory came back at 80 keys.
+
+Both files live under `data/`, so `make clean` removes them with the rest of a
+run's state rather than leaving a stale checkpoint for the next fleet to
+resume from. `COORD_CHECKPOINT=0` turns it off and the coordinator keeps
+nothing.
 
 ## Monitoring the Fleet
 
