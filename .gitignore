@@ -15,3 +15,6 @@ monitoring/prometheus.yml
 dist/
 build/
 *.egg-info/
+
+# ruff lint cache
+.ruff_cache/

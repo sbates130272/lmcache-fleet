@@ -79,6 +79,40 @@ Notes:
 - `GET /status` on the server reports the adapter's counters under `dedup`:
   files collapsed, bytes saved, collapse errors, completions currently held.
 
+## L2 eviction
+
+The adapter reports the inner adapter's capacity and usage, so LMCache's L2
+eviction works through it. Usage is logical bytes, which means a capacity can
+be modelled and filled under dedup while the disk holds almost nothing.
+
+```bash
+lmcache server ... --l2-adapter '{
+  "type": "plugin",
+  "module_path": "lmcache_l2_sim.l2_sim_adapter",
+  "class_name": "L2SimAdapter",
+  "adapter_params": {
+    "inner": {"type": "fs_native", "base_path": "/data/l2", "max_capacity_gb": 100}
+  },
+  "eviction": {"eviction_policy": "LRU", "trigger_watermark": 0.8, "eviction_ratio": 0.2}
+}'
+```
+
+Two things decide whether anything is evicted:
+
+- **The inner adapter must declare a capacity.** `fs_native` does, through
+  `max_capacity_gb`. Plain `fs` does not, and LMCache then logs `does not
+  support global eviction` and skips the adapter.
+- **The `eviction` block belongs on the outermost spec**, beside `"type":
+  "plugin"`. LMCache builds its eviction controller from the spec
+  `--l2-adapter` parses and never looks inside `inner`. A block only there
+  parses cleanly and does nothing, with usage running past the capacity and no
+  warning from LMCache; this adapter logs a note when it sees one.
+
+`fs_native` warns that its capacity "will NOT bound disk usage" when its own
+spec has no `eviction` block. Under this adapter that warning is a false alarm
+if the outer block is present; repeating the block inside `inner` silences it
+and is otherwise harmless.
+
 ## Tests
 
 The tests need LMCache importable, so they run inside an image that has it:

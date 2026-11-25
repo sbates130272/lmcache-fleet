@@ -12,11 +12,18 @@ L1, L2 = "#3987e5", "#d95926"
 # The coordinator labels servers by UUID; the servers' own target_info carries
 # that same UUID next to the scrape's friendly `server` label. Join through it
 # so coordinator-sourced panels read as lmcache-server-N instead of a UUID.
+#
+# The sum is what keeps a restart from splitting the line. A server mints a new
+# UUID each time it starts, so the join yields one series per run, all sharing
+# a `server` value: the legend showed the same name once per restart. Summing
+# over the UUID folds the runs into one series per server.
 COORD_PER_SERVER = (
+    "sum by (server) ("
     "lmcache_coordinator_key_directory_server_l1_keys"
     " * on(instance_id) group_left(server) "
     'label_replace(target_info{job="lmcache-servers",server=~"$server"},'
     '"instance_id","$1","service_instance_id","(.*)")'
+    ")"
 )
 
 def color(name, hexv):
@@ -39,9 +46,33 @@ def nid():
 SEQ_BLUES = ["#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef", "#9ec5f4", "#cde2fb"]
 # Keep in step with AGE_BUCKETS in monitoring/exporter/directory_exporter.py.
 AGE_LABELS = ["0-5m", "5-30m", "30m-1h", "1-2h", "2-4h", "4-8h", "8h+"]
-AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES)]
+# strict: the comment above asks these to stay in step with the exporter's
+# bands, and a silent zip would just drop the band nobody gave a colour.
+AGE_OVERRIDES = [color(a, c) for a, c in zip(AGE_LABELS, SEQ_BLUES, strict=True)]
+
+
+# One target per band rather than a single `sum by (age)`. Grafana sorts the
+# series of one query by label, and these labels do not sort into their own
+# order: "1-2h" lands before "30m-1h" and "5-30m", so the legend read hours
+# before minutes. Series follow target order, so listing the bands explicitly
+# is what puts them in age order. The same applies to any ordered bucket label
+# -- "11+" sorts before "3-5" in the access counts.
+def bucket_targets(metric, label, values, selector="", per_server=True):
+    # per_server=False for the fleet-wide metrics the exporter publishes with
+    # no server label at all: filtering them by $server would match nothing.
+    srv = ',server=~"$server"' if per_server else ""
+    return [(f'sum (lmcache_directory_{metric}{{{selector}{label}="{v}"{srv}}})', v)
+            for v in values]
+
+
+def age_targets(tier):
+    return bucket_targets("placements_by_age", "age", AGE_LABELS,
+                          selector=f'tier="{tier}",')
+
+
 ACCESS_LABELS = ["0", "1-2", "3-5", "6-10", "11+"]
-ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i]) for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6))]
+ACCESS_OVERRIDES = [color(a, SEQ_BLUES[i])
+                    for a, i in zip(ACCESS_LABELS, (0, 2, 3, 5, 6), strict=True)]
 REPLICA_OVERRIDES = [color("1 Server", "#3987e5"), color("2 Servers", "#d95926"),
                      color("3+ Servers", "#199e70")]
 CHURN_OVERRIDES = [color(f"{T1} Added", "#3987e5"), color(f"{T2} Added", "#d95926"),
@@ -65,6 +96,54 @@ def stat(title, expr, unit, x, y, w=6, h=4, desc=""):
                     "graphMode": "area", "justifyMode": "auto"},
         "targets": [{"refId": "A", "datasource": DS, "expr": expr, "instant": False}],
     }
+
+def table(title, targets, x, y, w=24, h=11, desc="", sort_by=None,
+          rename=None, units=None, widths=None, order=None):
+    """A table of current values, one row per series.
+
+    Instant queries in table format, so each series' labels become columns and
+    its value the last column. Several queries are merged into one table by
+    their shared label columns, which is how two metrics with identical labels
+    -- a count and an age, say -- end up as two columns of one row.
+    """
+    rename = rename or {}
+    overrides = [{"matcher": {"id": "byName", "options": name},
+                  "properties": [{"id": "unit", "value": unit}]}
+                 for name, unit in (units or {}).items()]
+    overrides += [{"matcher": {"id": "byName", "options": name},
+                   "properties": [{"id": "custom.width", "value": width}]}
+                  for name, width in (widths or {}).items()]
+    return {
+        "id": nid(), "type": "table", "title": title, "description": desc,
+        "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "fieldConfig": {
+            "defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"},
+                                    "inspect": False},
+                         "color": {"mode": "thresholds"},
+                         "thresholds": {"mode": "absolute",
+                                        "steps": [{"color": "text", "value": None}]}},
+            "overrides": overrides,
+        },
+        "options": {"showHeader": True, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "countRows": False,
+                               "fields": ""},
+                    "sortBy": ([{"displayName": sort_by, "desc": False}]
+                               if sort_by else [])},
+        "transformations": [
+            # Merge first: it is what folds the per-metric frames into single
+            # rows on their common label columns.
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {
+                "excludeByName": {"Time": True},
+                "renameByName": rename,
+                # Keyed by the ORIGINAL field name, before renameByName.
+                "indexByName": {n: i for i, n in enumerate(order or [])}}},
+        ],
+        "targets": [{"refId": chr(65 + i), "datasource": DS, "expr": e,
+                     "format": "table", "instant": True, "legendFormat": lf}
+                    for i, (e, lf) in enumerate(targets)],
+    }
+
 
 def heatmap(title, expr, x, y, w=12, h=11, desc=""):
     """Age distribution over time, bucketed at query time from the histogram.
@@ -162,7 +241,7 @@ panels = [
             "target_info to recover the friendly name. A sudden drop to 0 is a "
             "fence, not an eviction. Cross-check against the panel on the right: "
             "they come from independent sources and should agree."),
-    ts("Resident L1 Chunks per Server — Servers' Own View",
+    ts("L1 Keys per Server — Servers' Own View",
        [('lmcache_mp_l1_write_chunks_total{server=~"$server"} - lmcache_mp_l1_evicted_chunks_total{server=~"$server"}',
          "{{server}}")],
        "short", 12, 12, overrides=SERVER_OVERRIDES,
@@ -202,7 +281,27 @@ panels = [
        [('sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[1m]))', T1),
         ('sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[1m]))', T2)],
        "cps", 12, 36, w=12, overrides=TIER_OVERRIDES,
-       desc="Which tier served the hits, fleet-wide."),
+       desc="Which tier served the hits, fleet-wide. Tokens, not bytes and not "
+            "requests, so the numbers are larger than the request rate by the "
+            "tokens per request: NUM_TOKENS=512 at 3.8 lookups/s reads as "
+            "~1950/s. The axis unit is Grafana's generic counts-per-second, so "
+            "it renders as c/s. Bytes would be larger still — a chunk here is "
+            "about 1 MiB, so the same rate in bytes would be ~7.6 MiB/s."),
+    ts("Chunks Retrieved by Clients/Second",
+       [('sum by (server) (rate(lmcache_mp_num_chunks_loaded_total{server=~"$server"}[1m]))',
+         "{{server}}")],
+       "cps", 0, 40, overrides=SERVER_OVERRIDES,
+       desc="Chunks handed back to a client by a retrieve, whichever tier "
+            "they came from: the read side of the fleet. The stimulators only "
+            "store, so this stays at zero until `make restore` runs."),
+    ts("L2 to L1 Loads/Second",
+       [('rate(lmcache_mp_l2_prefetch_load_completed_chunks_total{server=~"$server"}[1m])',
+         "{{server}}")],
+       "cps", 12, 40, overrides=SERVER_OVERRIDES,
+       desc="Chunks loaded from L2 back into L1 because a lookup asked for "
+            "something L1 no longer held. The share of the panel on the left "
+            "that had to come from L2. Each load takes L1 space, so it also "
+            "shows up as L1 evictions."),
     row("Key Directory Inventory (Directory Exporter)", 44),
     ts("L2 Placements per Server",
        [('sum by (server) (lmcache_directory_placements{tier="l2",server=~"$server"})', "{{server}}")],
@@ -217,13 +316,14 @@ panels = [
        desc="Bytes the directory attributes to each server's L2. Logical: under "
             "the dedup adapter the disk holds far less."),
     ts("L2 Blocks by Age",
-       [('sum by (age) (lmcache_directory_placements_by_age{tier="l2",server=~"$server"})', "{{age}}")],
+       age_targets("l2"),
        "short", 0, 53, stacked=True, fill=70, overrides=AGE_OVERRIDES,
        desc="How long each L2 block has existed, in the exporter's named age "
             "bands. Age is time since the exporter first saw the block; it "
-            "checkpoints these so a restart no longer resets them. Colours "
-            "assume the default seven bands — if you override AGE_BOUNDS, read "
-            "the heatmap below instead, which follows any bounds."),
+            "checkpoints these so a restart no longer resets them. Bands are "
+            "the default seven, as both the colours and the ordering need to "
+            "know them ahead of time — if you override AGE_BOUNDS, read the "
+            "heatmap below instead, which follows any bounds."),
     ts("Block Age Quantiles",
        [('histogram_quantile(0.5, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l2",server=~"$server"}))', f"{T2} Median"),
         ('histogram_quantile(0.9, sum by (le) (lmcache_directory_placement_age_seconds_bucket{tier="l2",server=~"$server"}))', f"{T2} P90"),
@@ -241,7 +341,7 @@ panels = [
                  "in that age band. A diagonal means a cohort ageing together; "
                  "a bright bottom row means fresh blocks arriving."),
     ts("L1 Blocks by Age",
-       [('sum by (age) (lmcache_directory_placements_by_age{tier="l1",server=~"$server"})', "{{age}}")],
+       age_targets("l1"),
        "short", 12, 57, stacked=True, fill=70, overrides=AGE_OVERRIDES,
        desc="How long blocks currently in L1 have been there. With a small L1 "
             "under constant eviction this stays young; old L1 blocks mean the "
@@ -256,9 +356,11 @@ panels = [
         ('lmcache_directory_keys_by_replicas{replicas="2"}', "2 Servers"),
         ('lmcache_directory_keys_by_replicas{replicas="3+"}', "3+ Servers")],
        "short", 12, 61, stacked=True, fill=60, overrides=REPLICA_OVERRIDES,
-       desc="Replication across the fleet. Keys held by one server are unique "
-            "to it; keys held by several come from overlapping stimulator "
-            "windows."),
+       desc="Replication across the registered fleet. Keys held by one server "
+            "are unique to it; keys held by several come from overlapping "
+            "stimulator windows. Copies left by a departed instance are not "
+            "counted, so a restarted server is not a replica of its own "
+            "previous run."),
     ts("Block Churn per Minute",
        [('sum(rate(lmcache_directory_placements_added_total{tier="l1",server=~"$server"}[2m])) * 60',
          f"{T1} Added"),
@@ -271,11 +373,55 @@ panels = [
        "short", 0, 69, overrides=CHURN_OVERRIDES,
        desc="Blocks entering and leaving each tier, as seen between directory "
             "polls. A block that appears and disappears between two polls is "
-            "not counted."),
+            "not counted. A server restart shows as L1 removed, because the "
+            "coordinator fences that server's L1; it does not show as L2 "
+            "removed, because the L2 blocks are still listed, so L2 removed "
+            "means evicted or deleted."),
     ts("Keys by Access Count",
-       [("sum by (accesses) (lmcache_directory_keys_by_access_count)", "{{accesses}}")],
+       bucket_targets("keys_by_access_count", "accesses", ACCESS_LABELS, per_server=False),
        "short", 12, 69, stacked=True, fill=70, overrides=ACCESS_OVERRIDES,
        desc="How often the coordinator reports each key as accessed."),
+    ts("L2 Placements Left by Departed Instances",
+       [('sum by (server) (lmcache_directory_departed_placements{tier="l2",server=~"$server"})',
+         "{{server}}")],
+       "short", 0, 77, overrides=SERVER_OVERRIDES,
+       desc="L2 blocks the directory still lists for instances that are no "
+            "longer registered. A server takes a new instance id every time "
+            "it starts, and the coordinator keeps a departed instance's L2 "
+            "placements on purpose, so each restart strands that run's blocks "
+            "here. Shown under the name the instance had; 'unknown' is one "
+            "the exporter never saw registered. Empty on a fleet that has "
+            "not been restarted."),
+    table("Most Reused Blocks",
+          # summed by the three labels that matter, which is also what strips
+          # __name__, job, instance and component. Those differ between the two
+          # metrics -- __name__ always does -- and any differing column stops
+          # the merge from folding the pair into one row.
+          [('sum by (rank, hash, location) (lmcache_directory_top_reused_accesses)', ""),
+           ('sum by (rank, hash, location) (lmcache_directory_top_reused_age_seconds)', "")],
+          0, 85, h=12,
+          sort_by="Rank",
+          order=["rank", "hash", "location", "Value #A", "Value #B"],
+          rename={"rank": "Rank", "hash": "Hash", "location": "Location",
+                  "Value #A": "Accesses", "Value #B": "Age"},
+          units={"Age": "s"},
+          widths={"Rank": 70, "Hash": 170, "Accesses": 110, "Age": 110},
+          desc="The blocks the coordinator has served most often, named "
+               "individually rather than bucketed: the first 16 hex of the "
+               "chunk hash, every server and tier holding a copy, how many "
+               "times it has been served, and the age of its oldest copy. "
+               "Everything else in this row is an aggregate, because a series "
+               "per key would be a cardinality disaster; this is bounded by "
+               "TOP_REUSED (default 10). Ties break by hash so the order does "
+               "not shuffle between polls. The two metrics carry identical "
+               "labels, which is what lets them merge into one row."),
+    ts("L2 Logical Bytes Left by Departed Instances",
+       [('sum by (server) (lmcache_directory_departed_placement_bytes{tier="l2",server=~"$server"})',
+         "{{server}}")],
+       "bytes", 12, 77, overrides=SERVER_OVERRIDES,
+       desc="Bytes behind the panel on the left. No running server counts "
+            "these towards its L2 usage, so nothing evicts them: they stay "
+            "until the L2 directory is cleared."),
 ]
 
 # A table legend needs more vertical room than the list one did, so re-flow the
@@ -313,13 +459,17 @@ dash = {
     "refresh": "5s",
     "time": {"from": "now-15m", "to": "now"},
     "timepicker": {},
+    # Listed from a metric the servers serve themselves, whose `server` label
+    # is the scrape config's and so is only ever a name. The directory
+    # exporter's label used to carry the UUID of every departed instance, and
+    # those series stay in Prometheus for its whole retention.
     "templating": {"list": [{
         "name": "server",
         "label": "Server",
         "type": "query",
         "datasource": DS,
-        "definition": "label_values(lmcache_directory_placements, server)",
-        "query": {"query": "label_values(lmcache_directory_placements, server)",
+        "definition": "label_values(lmcache_mp_l1_usage_ratio, server)",
+        "query": {"query": "label_values(lmcache_mp_l1_usage_ratio, server)",
                   "refId": "server"},
         "refresh": 2,
         "includeAll": True,

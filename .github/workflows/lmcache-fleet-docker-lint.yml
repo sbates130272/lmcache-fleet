@@ -45,9 +45,27 @@ jobs:
 
       - name: Validate generated compose, L2 sim adapter
         run: |
-          L2_DEDUP=1 L1_GB=0.05 L2_READ_DELAY_MS=5 L2_DELAY_JITTER=0.2 \
+          L2_DEDUP=1 L1_GIB=0.05 L2_READ_DELAY_MS=5 L2_DELAY_JITTER=0.2 \
             NUM_SERVERS=2 SEQ=40 python3 scripts/gen_compose.py
           docker compose -f docker/docker-compose.yml config -q
+
+      # L2_CAPACITY_GIB swaps the backing adapter and adds an eviction block, a
+      # third shape of the --l2-adapter JSON. The block has to sit on the
+      # outermost spec: inside the plugin's "inner" LMCache ignores it without
+      # a word, so its position is asserted rather than left to the eye.
+      - name: Validate generated compose, L2 capacity and eviction
+        run: |
+          L2_DEDUP=1 L2_CAPACITY_GIB=0.1 NUM_SERVERS=2 SEQ=40 python3 scripts/gen_compose.py
+          docker compose -f docker/docker-compose.yml config -q
+          python3 - <<'PY'
+          import json, re
+          text = open("docker/docker-compose.yml").read()
+          spec = json.loads(re.search(r"--l2-adapter '(.*)'", text).group(1))
+          inner = spec["adapter_params"]["inner"]
+          assert spec["type"] == "plugin" and "eviction" in spec, spec
+          assert inner["type"] == "fs_native" and inner["max_capacity_gb"] == 0.1, inner
+          print("eviction block on the outermost spec, capacity on fs_native")
+          PY
 
       # NUM_COORD is the one input the generator is documented to reject. If it
       # ever stops rejecting it, the fleet silently builds a split-brain key

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 # Standard
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 import os
 import random
 import select
@@ -122,7 +122,7 @@ class L2SimAdapterConfig(L2AdapterConfigBase):
         inner_config: L2AdapterConfigBase,
         dedup: bool = True,
         link_mode: str = "hardlink",
-        canonical_dir: Optional[str] = None,
+        canonical_dir: str | None = None,
         write_delay_ms: float = 0.0,
         write_delay_ms_per_mb: float = 0.0,
         read_delay_ms: float = 0.0,
@@ -142,7 +142,7 @@ class L2SimAdapterConfig(L2AdapterConfigBase):
         self.seed = seed
 
     @classmethod
-    def from_dict(cls, d: dict) -> "L2SimAdapterConfig":
+    def from_dict(cls, d: dict) -> L2SimAdapterConfig:
         """Parse a dedup adapter spec, building the inner config too.
 
         The ``"inner"`` sub-dict is dispatched through the L2 adapter config
@@ -178,6 +178,19 @@ class L2SimAdapterConfig(L2AdapterConfigBase):
         inner_config.eviction_config = cls._parse_eviction_config(inner)
         inner_config.persist_config = cls._parse_persist_config(inner)
         inner_config.serde_config = cls._parse_serde_config(inner)
+        if inner.get("eviction") is not None:
+            # LMCache builds its L2 eviction controller from the spec that
+            # --l2-adapter parses, which is the one wrapping this adapter, and
+            # never looks inside "inner". An eviction block only here parses
+            # cleanly and then does nothing, with usage running past the
+            # declared capacity. This config cannot see the outer spec, so it
+            # can only say where the block has to be.
+            logger.info(
+                "L2SimAdapter: the 'eviction' block inside 'inner' does not "
+                "enable L2 eviction on its own. LMCache reads it from the "
+                "outermost --l2-adapter spec, next to \"type\": \"plugin\"; "
+                "make sure it is there as well."
+            )
 
         dedup = d.get("dedup", True)
         if not isinstance(dedup, bool):
@@ -270,7 +283,7 @@ class L2SimAdapter(L2AdapterInterface):
     def __init__(
         self,
         config: L2SimAdapterConfig,
-        l1_memory_desc: "Optional[L1MemoryDesc]" = None,
+        l1_memory_desc: L1MemoryDesc | None = None,
     ) -> None:
         """Build the inner adapter from ``config`` and start the pump.
 
@@ -301,8 +314,8 @@ class L2SimAdapter(L2AdapterInterface):
 
         self._dedup = config.dedup
         self._link_mode = config.link_mode
-        self._base_path: Optional[Path] = None
-        self._canonical_dir: Optional[Path] = None
+        self._base_path: Path | None = None
+        self._canonical_dir: Path | None = None
         if self._dedup:
             self._base_path = Path(config.inner_config.base_path)  # type: ignore[attr-defined]
             self._canonical_dir = Path(
@@ -466,7 +479,7 @@ class L2SimAdapter(L2AdapterInterface):
                 )
                 self._held_loads.append((now + delay, task_id, bitmap))
 
-    def _release_due(self, now: float) -> Optional[float]:
+    def _release_due(self, now: float) -> float | None:
         """Release completions whose delay has passed; signal the controllers.
 
         Returns:
@@ -689,7 +702,7 @@ register_l2_adapter_type("l2_sim", L2SimAdapterConfig)
 
 def _create_l2_sim_adapter(
     config: L2AdapterConfigBase,
-    l1_memory_desc: "Optional[L1MemoryDesc]" = None,
+    l1_memory_desc: L1MemoryDesc | None = None,
 ) -> L2AdapterInterface:
     """Create a ``L2SimAdapter`` from a ``L2SimAdapterConfig``.
 

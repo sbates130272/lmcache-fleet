@@ -29,7 +29,7 @@ env:
   # spill costs ~1 MB per server instead of ~81 MB. Both tiers end up
   # populated, which is what makes this a fleet test rather than a start-up
   # test.
-  L1_GB: 0.05
+  L1_GIB: 0.05
   L2_DEDUP: 1
   LMCACHE_IMAGE: lmcache-fleet-demo/lmcache:0.5.8-cpu
   # The 15s default needs two polls, and therefore half a minute, before the
@@ -38,9 +38,25 @@ env:
 
 jobs:
   smoke-test:
-    name: lmcache-fleet - Smoke Test
+    name: lmcache-fleet - Smoke Test (${{ matrix.l2 }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Two L2 modes, because they are different code paths end to end: a
+    # different backing adapter, an eviction controller that either exists or
+    # does not, and DELETE events the unbounded fleet never sends. A PR runs
+    # both side by side, so neither can break unnoticed. main runs only the
+    # capped one: it publishes a single dashboard, and the one with L2 turning
+    # over shows everything the unbounded one does and more.
+    strategy:
+      fail-fast: false
+      matrix:
+        l2: ${{ github.event_name == 'push' && fromJSON('["capped"]') || fromJSON('["unbounded", "capped"]') }}
+    env:
+      # Sized against what each server stores, so the cap is always crossed:
+      # 1 MiB per block and two blocks per sequence is 80 MiB on a PR and
+      # 400 MiB on main, against 0.05 GiB and 0.2 GiB. `make check` reads this
+      # too, and with it set requires every server to have actually evicted.
+      L2_CAPACITY_GIB: ${{ matrix.l2 == 'capped' && (github.event_name == 'push' && '0.2' || '0.05') || '0' }}
     # Needed only by the gh-pages publish below, which is why it is the one
     # scope granted rather than leaving the token at whatever the repo default
     # happens to be.
@@ -93,8 +109,32 @@ jobs:
             [ "$status" = "0" ] || exit 1
           done
 
+      # In the capped mode this also requires each server to have evicted from
+      # L2 and to sit within its capacity. Both tiers fill whether or not the
+      # capacity is enforced, so without that the capped leg would pass on a
+      # fleet that silently ignored it.
       - name: Check the key directory
         run: make check NUM=$NUM
+
+      # The read side. The stimulators only store, so nothing has been fetched
+      # back yet; this samples each server's window and retrieves what is
+      # there, from L1 where it still is and through L2 where it has spilled.
+      # Each restore fails below RESTORE_MIN_HIT_RATE, set low rather than at 1:
+      # in the capped mode most of the window has been evicted on purpose, and
+      # what is being asserted is that restores find blocks, not all of them.
+      - name: Run the restore stimulators
+        env:
+          RESTORE_MIN_HIT_RATE: 0.1
+        run: |
+          make restore NUM=$NUM SEQ=$SEQ
+          for i in $(seq 1 "$NUM"); do
+            cid=$(docker compose -f docker/docker-compose.yml --profile restore ps -aq "restore-$i")
+            if [ -z "$cid" ]; then echo "restore-$i never started" >&2; exit 1; fi
+            status=$(docker wait "$cid")
+            docker logs "$cid" 2>&1 | grep -E '^\{|^FAIL' || true
+            echo "restore-$i exited $status"
+            [ "$status" = "0" ] || exit 1
+          done
 
       - name: Report
         run: make report NUM=$NUM
@@ -118,7 +158,7 @@ jobs:
       - name: Upload the dashboard screenshot
         uses: actions/upload-artifact@v7
         with:
-          name: grafana-dashboard
+          name: grafana-dashboard-${{ matrix.l2 }}
           path: grafana.png
           if-no-files-found: error
 
@@ -147,7 +187,8 @@ jobs:
             <strong>LMCache Fleet</strong> — Grafana dashboard from the last
             <a href="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}">smoke-test run</a>
             on main (<code>${GITHUB_SHA}</code>): a ${NUM}-server fleet storing
-            ${SEQ} sequences each, with L1 and L2 both populated. The dashboard
+            ${SEQ} sequences each into an L2 capped at ${L2_CAPACITY_GIB} GiB per
+            server, so L1 spills to L2 and L2 evicts in turn. The dashboard
             covers the fleet's whole lifetime, about ${WINDOW_MINS} minute(s).
           </header>
           <img src="grafana-dashboard.png" alt="LMCache fleet Grafana dashboard">
@@ -165,14 +206,14 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          docker compose -f docker/docker-compose.yml --profile stim logs --no-color --tail=200 > fleet-logs.txt 2>&1 || true
+          docker compose -f docker/docker-compose.yml --profile stim --profile restore logs --no-color --tail=200 > fleet-logs.txt 2>&1 || true
           docker compose -f docker/docker-compose.yml ps --all >> fleet-logs.txt 2>&1 || true
 
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: fleet-logs
+          name: fleet-logs-${{ matrix.l2 }}
           path: fleet-logs.txt
           if-no-files-found: ignore
 

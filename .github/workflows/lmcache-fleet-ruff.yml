@@ -1,0 +1,30 @@
+name: lmcache-fleet - Ruff
+
+# PR only, like the other lint lanes: every commit reaches main through a PR
+# merge, so a post-merge run would re-check a tree this already passed on.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ruff:
+    name: lmcache-fleet - Ruff
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      # Pinned, because ruff widens its default rule set between releases and
+      # a floating version would fail this lane on code nobody touched. The
+      # rules themselves are pinned in ruff.toml for the same reason.
+      - name: Run ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: 0.17.6
+          args: check --no-cache --output-format github

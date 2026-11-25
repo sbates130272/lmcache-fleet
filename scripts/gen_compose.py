@@ -3,9 +3,10 @@
   - 1 coordinator (fleet-wide key directory)
   - N MP servers  (each: L1 DRAM tier + L2 fs adapter, registers w/ coordinator,
                    reports cache events so the directory tracks L1/L2 placements)
-  - N stimulators (one-shot `lmcache bench server --mode cpu` containers that
-                   STORE synthetic KV chunks into their paired server; shares
-                   the server's IPC namespace so the CPU SHM path works)
+  - N stimulators (one-shot scripts/stim.py containers that STORE synthetic KV
+                   chunks into their paired server; shares the server's IPC
+                   namespace so the CPU SHM path works)
+  - N restorers   (the same script fetching chunks back, from L1 or via L2)
 
 Writes docker/docker-compose.yml and monitoring/prometheus.yml, both generated
 and both gitignored. Volume paths are relative to docker/, since that is where
@@ -37,7 +38,7 @@ ENV_DOCS = {
     "NUM_COORD": ("Fleet", "coordinators; must be 1 (v0.5.8 has no clustering)"),
     "LMCACHE_IMAGE": ("Fleet", "image for coordinator, servers and stimulators"),
     "CHUNK_SIZE": ("Fleet", "chunk size; must match across servers and coordinator"),
-    "L1_GB": ("Fleet", "per-server L1 DRAM tier size"),
+    "L1_GIB": ("Fleet", "per-server L1 DRAM tier size in GiB"),
     "EVICT_WATERMARK": ("Fleet", "L1 fraction that triggers the L2 spill"),
     "SHM_SIZE": ("Fleet", "/dev/shm per server and stimulator"),
     "COORD_PORT": ("Fleet", "host port the coordinator is published on"),
@@ -51,6 +52,13 @@ ENV_DOCS = {
     "RANGE_LO": ("Workload", "low bound of the block sub-range windows sit in"),
     "RANGE_HI": ("Workload", "high bound of that sub-range"),
 
+    "STIM_OP": ("Workload", "what stim-N does: store, or verify (store then reread)"),
+    "STIM_INTERVAL": ("Workload", "seconds between a stimulator's store requests"),
+    "RESTORE_ORDER": ("Workload", "how restore-N walks its window: random or sequential"),
+    "RESTORE_COUNT": ("Workload", "restore requests each restore-N sends"),
+    "RESTORE_INTERVAL": ("Workload", "seconds between a restore-N's requests"),
+    "RESTORE_MIN_HIT_RATE": ("Workload", "restore-N fails below this fraction of chunks found"),
+
     "L2_DEDUP": ("L2 simulation", "1 = one canonical file per block size (fake contents)"),
     "L2_LINK_MODE": ("L2 simulation", "hardlink or symlink for collapsed files"),
     "L2_WRITE_DELAY_MS": ("L2 simulation", "fixed delay added to each L2 store"),
@@ -58,6 +66,10 @@ ENV_DOCS = {
     "L2_WRITE_DELAY_MS_PER_MB": ("L2 simulation", "store delay per MiB written"),
     "L2_READ_DELAY_MS_PER_MB": ("L2 simulation", "load delay per MiB read"),
     "L2_DELAY_JITTER": ("L2 simulation", "fractional jitter on L2 delays, 0 to 1"),
+    "L2_CAPACITY_GIB": ("L2 simulation", "per-server L2 capacity in logical GiB; 0 = unbounded, no eviction"),
+    "L2_EVICT_POLICY": ("L2 simulation", "L2 eviction policy once a capacity is set: LRU or ARC"),
+    "L2_EVICT_WATERMARK": ("L2 simulation", "L2 usage fraction that triggers eviction"),
+    "L2_EVICT_RATIO": ("L2 simulation", "fraction of L2 evicted each time it triggers"),
 
     "PROM_IMAGE": ("Monitoring", "Prometheus image"),
     "GRAFANA_IMAGE": ("Monitoring", "Grafana image"),
@@ -65,6 +77,11 @@ ENV_DOCS = {
     "SCRAPE_INTERVAL": ("Monitoring", "Prometheus scrape interval"),
     "PROM_RETENTION": ("Monitoring", "how long metric history is kept"),
     "GRAFANA_PORTS": ("Monitoring", "host port range Grafana may bind"),
+    "GRAFANA_LOG_LEVEL": ("Monitoring", "Grafana log level: debug, info, warn or error"),
+    "COORD_CHECKPOINT": ("Fleet", "1 = checkpoint the coordinator's directory so a restart resumes"),
+    "COORD_CHECKPOINT_INTERVAL": ("Fleet", "seconds between checkpoint writes; 0 = only on a clean stop"),
+    "QUIET_ACCESS_LOG": ("Monitoring", "1 = drop uvicorn access lines for polled paths"),
+    "QUIET_ACCESS_PATHS": ("Monitoring", "comma-separated path prefixes treated as polled"),
     "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
     "DIRECTORY_POLL": ("Monitoring", "seconds between directory exporter polls"),
 
@@ -80,6 +97,7 @@ ENV_DOCS = {
     "PAGE_SIZE": ("Exporter (set on the service)", "keys per directory page"),
     "EXPORTER_PORT": ("Exporter (set on the service)", "port /metrics is served on"),
     "MISSING_POLLS": ("Exporter (set on the service)", "absences before a placement counts as gone"),
+    "TOP_REUSED": ("Exporter (set on the service)", "most-reused keys published individually by hash; 0 = off"),
     "STATE_PATH": ("Exporter (set on the service)", "where first-seen times are checkpointed"),
     "STATE_SAVE_INTERVAL": ("Exporter (set on the service)", "seconds between checkpoints"),
     "AGE_BOUNDS": ("Exporter (set on the service)", "age bucket bounds, comma-separated durations"),
@@ -90,6 +108,7 @@ _SECTION_ORDER = ["Fleet", "Workload", "L2 simulation", "Monitoring", "Runtime",
 
 # Defaults the source computes rather than spells out.
 COMPUTED_DEFAULTS = {
+    "RESTORE_COUNT": "SEQ",
     "NUM_SERVERS": "3 (or argv[1])",
     "TOTAL": "NUM_SERVERS x SEQ x blocks",
     "RANGE_HI": "TOTAL",
@@ -106,7 +125,8 @@ def _scan_env_defaults(path):
     variables never runs the generator's side effects. Parentheses are
     balanced by hand because some defaults contain calls of their own.
     """
-    source = open(path).read()
+    with open(path) as f:
+        source = f.read()
     needle = "os.environ" + ".get("   # split so this line is not itself a hit
     start = 0
     while (found := source.find(needle, start)) != -1:
@@ -159,7 +179,7 @@ def _print_env_vars():
     c = _env_vars_palette()
     print(f"\n{c['bold']}LMCache Fleet environment variables{c['off']}\n")
     print(f"  {c['dim']}Pass them to make, e.g."
-          f"  L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000{c['off']}")
+          f"  L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=6000{c['off']}")
     print(f"  {c['dim']}NUM and SEQ are make variables; "
           f"everything below is an env var.{c['off']}")
     for section in _SECTION_ORDER:
@@ -190,9 +210,19 @@ if NUM_COORD != 1:
     sys.exit(f"NUM_COORD={NUM_COORD}: LMCache {os.environ.get('LMCACHE_VERSION', 'v0.5.8')} "
              "supports exactly one coordinator per fleet")
 
+# Sizes are GiB, and named so. LMCache's own flags say "gb" (--l1-size-gb,
+# max_capacity_gb) but multiply by 1024**3, so the old *_GB names here promised
+# a unit nothing honoured. An old name still set is an error rather than
+# ignored: silently falling back to the 1 GiB default L1 turns a run meant to
+# spill into one that never does.
+for _old, _new in (("L1_GB", "L1_GIB"), ("L2_CAPACITY_GB", "L2_CAPACITY_GIB")):
+    if _old in os.environ:
+        sys.exit(f"{_old} was renamed {_new} (the value was always GiB); "
+                 f"set {_new}={os.environ[_old]} instead")
+
 IMAGE        = os.environ.get("LMCACHE_IMAGE", "lmcache-fleet-demo/lmcache:0.5.8-cpu")
 CHUNK_SIZE   = int(os.environ.get("CHUNK_SIZE", "256"))
-L1_GB        = float(os.environ.get("L1_GB", "1"))
+L1_GIB        = float(os.environ.get("L1_GIB", "1"))
 SEQS         = int(os.environ.get("SEQ", "6"))          # distinct synthetic sequences per stimulator
 NUM_TOKENS   = int(os.environ.get("NUM_TOKENS", "512")) # tokens per synthetic request
 COORD_PORT   = int(os.environ.get("COORD_PORT", "9300")) # host 127.0.0.1 port for coordinator
@@ -292,7 +322,44 @@ L2_DELAYS = {
     "delay_jitter": float(os.environ.get("L2_DELAY_JITTER", "0")),
 }
 L2_PLUGIN = L2_DEDUP or any(L2_DELAYS.values())
-_fs_spec = {"type": "fs", "base_path": "/data/l2"}
+
+# L2 eviction. Off by default: L2 grows without bound, as it always has here.
+# Setting L2_CAPACITY_GIB turns it on, and three things have to change together
+# for LMCache to act on it -- get any one wrong and nothing is evicted:
+#   * the backing adapter becomes fs_native. Plain fs declares no capacity, so
+#     LMCache logs "does not support global eviction" and skips it.
+#   * max_capacity_gb goes on that backing spec. It is counted in logical
+#     bytes, so under dedup it bounds what the server believes it stored, not
+#     the near-zero disk actually used -- which is the point of modelling it.
+#   * the "eviction" block goes on the OUTERMOST spec, the one --l2-adapter
+#     parses. Inside the plugin's "inner" it is ignored without a warning.
+L2_CAPACITY_GIB = float(os.environ.get("L2_CAPACITY_GIB", "0"))
+L2_EVICT_POLICY = os.environ.get("L2_EVICT_POLICY", "LRU")
+L2_EVICT_WATERMARK = float(os.environ.get("L2_EVICT_WATERMARK", "0.8"))
+L2_EVICT_RATIO = float(os.environ.get("L2_EVICT_RATIO", "0.2"))
+if L2_CAPACITY_GIB < 0:
+    sys.exit(f"L2_CAPACITY_GIB={L2_CAPACITY_GIB:g} must be >= 0 (0 disables L2 eviction)")
+if L2_CAPACITY_GIB:
+    # IsolatedLRU evicts per cache_salt against coordinator quotas, not against
+    # this capacity, and noop never evicts: neither does what the knob says.
+    if L2_EVICT_POLICY not in ("LRU", "ARC"):
+        sys.exit(f"L2_EVICT_POLICY={L2_EVICT_POLICY!r} must be LRU or ARC")
+    if not 0 < L2_EVICT_WATERMARK <= 1:
+        sys.exit(f"L2_EVICT_WATERMARK={L2_EVICT_WATERMARK:g} must be in (0, 1]")
+    if not 0 < L2_EVICT_RATIO <= 1:
+        sys.exit(f"L2_EVICT_RATIO={L2_EVICT_RATIO:g} must be in (0, 1]")
+    L2_EVICTION = {"eviction": {"eviction_policy": L2_EVICT_POLICY,
+                                "trigger_watermark": L2_EVICT_WATERMARK,
+                                "eviction_ratio": L2_EVICT_RATIO}}
+    # The block is repeated on the backing spec even when the plugin wraps it.
+    # It does nothing there, but fs_native otherwise warns that the capacity
+    # "will NOT bound disk usage" because it sees none on its own spec -- a
+    # false alarm in every server log when the outer block is doing the work.
+    _fs_spec = {"type": "fs_native", "base_path": "/data/l2",
+                "max_capacity_gb": L2_CAPACITY_GIB, **L2_EVICTION}
+else:
+    _fs_spec = {"type": "fs", "base_path": "/data/l2"}
+    L2_EVICTION = {}
 if L2_PLUGIN:
     L2_ADAPTER = {
         "type": "plugin",
@@ -305,6 +372,7 @@ if L2_PLUGIN:
             "seed": int(SEED) if SEED.lstrip("-").isdigit() else 0,
             **{k: v for k, v in L2_DELAYS.items() if v},
         },
+        **L2_EVICTION,
     }
 else:
     L2_ADAPTER = _fs_spec
@@ -322,7 +390,48 @@ PLUGIN_DIRS = sorted(
 ) if os.path.isdir(_plugins_dir) else []
 PLUGIN_PYTHONPATH = ":".join(f"{_PLUGIN_MOUNT}/{name}" for name in PLUGIN_DIRS)
 
-L2_ENV = f"      PYTHONPATH: {PLUGIN_PYTHONPATH}\n" if L2_PLUGIN else ""
+# Prometheus scrapes /metrics, compose probes /healthcheck, the servers
+# heartbeat and the exporter pages /directory/keys -- every few seconds, each
+# logged by uvicorn at INFO. On a small fleet that is ~150 lines a minute
+# saying nothing, and the coordinator is the worst of it. LMCache hardcodes
+# access_log=True with no flag to turn it down, so docker/quiet/sitecustomize.py
+# goes on PYTHONPATH instead: Python imports a module of that name at startup,
+# early enough to attach a filter to the access logger. It drops only polled
+# paths that returned under 400, so a failing healthcheck still prints.
+# The coordinator's key directory is derived state rebuilt from the servers'
+# cache events, so losing it costs hit rate rather than correctness -- but a
+# restart otherwise starts cold, and on a fleet that has stored for an hour
+# that means the dashboard and `make report` read empty until the servers
+# report again. Checkpointing it into the data tree makes a restart resume.
+# Operator-set state (L2 pins, per-cache_salt quotas) is separate and written
+# only when it changes, hence the second path.
+COORD_CHECKPOINT = os.environ.get("COORD_CHECKPOINT", "1") not in ("0", "", "false", "no")
+COORD_CHECKPOINT_INTERVAL = os.environ.get("COORD_CHECKPOINT_INTERVAL", "60")
+
+QUIET_ACCESS_LOG = os.environ.get("QUIET_ACCESS_LOG", "1")
+_QUIET_MOUNT = "/opt/lmcache-fleet/quiet"
+_PYTHONPATH = ([_QUIET_MOUNT] if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else []) \
+    + ([PLUGIN_PYTHONPATH] if L2_PLUGIN else [])
+# Mounted on every lmcache container; only the HTTP servers have an access log
+# to quieten, but the path has to exist wherever PYTHONPATH names it.
+QUIET_MOUNT = (f"      - ../docker/quiet:{_QUIET_MOUNT}:ro      # access-log filter\n"
+               if QUIET_ACCESS_LOG not in ("0", "", "false", "no") else "")
+PY_ENV = f"      PYTHONPATH: {':'.join(_PYTHONPATH)}\n" if _PYTHONPATH else ""
+# Both files live in the data tree, so `make clean` takes them with the rest
+# of the run's state rather than leaving a stale directory to be resumed from.
+COORD_STATE_MOUNT = ("      - ../data/coordinator:/state            "
+                     "# checkpointed key directory, pins and quotas\n"
+                     if COORD_CHECKPOINT else "")
+COORD_FLAGS = (f"      --checkpoint-path /state/checkpoint.json\n"
+               f"      --checkpoint-interval {COORD_CHECKPOINT_INTERVAL}\n"
+               f"      --metadata-path /state/metadata.json\n"
+               if COORD_CHECKPOINT else "")
+_coord_vols = QUIET_MOUNT + COORD_STATE_MOUNT
+COORD_VOLUMES = f"    volumes:\n{_coord_vols}" if _coord_vols else ""
+# The coordinator loads no plugins, so it gets the quiet path only rather than
+# a PYTHONPATH naming a plugins mount it does not have.
+COORD_ENV = f"      PYTHONPATH: {_QUIET_MOUNT}\n" if QUIET_MOUNT else ""
+L2_ENV = PY_ENV
 L2_PLUGIN_MOUNT = (f"      - ../plugins:{_PLUGIN_MOUNT}:ro           # out-of-tree L2 adapters\n"
                    if L2_PLUGIN else "")
 if L2_PLUGIN and not PLUGIN_DIRS:
@@ -340,6 +449,7 @@ GRAFANA_IMAGE = os.environ.get("GRAFANA_IMAGE", "grafana/grafana:latest")
 SCRAPE_INTERVAL = os.environ.get("SCRAPE_INTERVAL", "5s")
 PROM_RETENTION = os.environ.get("PROM_RETENTION", "6h")
 GRAFANA_PORTS = os.environ.get("GRAFANA_PORTS", "3000-3010")
+GRAFANA_LOG_LEVEL = os.environ.get("GRAFANA_LOG_LEVEL", "warn")
 # Set GRAFANA_PORT to pin one exactly; otherwise a port is chosen from the
 # range below and written into the compose file as a fixed mapping.
 GRAFANA_PORT = os.environ.get("GRAFANA_PORT")
@@ -408,6 +518,30 @@ DIRECTORY_POLL = os.environ.get("DIRECTORY_POLL", "15")
 # n_kv*n_layers tensors of NB*BS*H*D*2bytes; keep the product well under L1.
 SHAPE_SPEC = os.environ.get("SHAPE_SPEC", "(2,64,16,4,64):float16:4")
 
+# ---------------- stimulators ------------------------------------------------
+# scripts/stim.py rather than `lmcache bench server`. The bench is a sanity
+# test with one fixed case: store a sequence, then read the same one straight
+# back. Every block is read while still in L1, L2 never serves a read, and the
+# write and read rates cannot be told apart. stim.py drives the same client one
+# operation at a time, so stores and restores are separate services:
+#   stim-N     profile "stim":    stores its window, reads nothing back
+#   restore-N  profile "restore": retrieves from the same window, stores nothing
+# STIM_OP=verify puts the bench's store-then-reread case back for stim-N.
+STIM_OP = os.environ.get("STIM_OP", "store")
+if STIM_OP not in ("store", "verify"):
+    sys.exit(f"STIM_OP={STIM_OP!r} must be store or verify "
+             "(restores are their own service: make restore)")
+STIM_INTERVAL = float(os.environ.get("STIM_INTERVAL", "0.2"))
+# Restores sample the window at random by default. In order, a restore walks
+# the oldest blocks first, which are exactly the ones L2 eviction has taken.
+RESTORE_ORDER = os.environ.get("RESTORE_ORDER", "random")
+if RESTORE_ORDER not in ("random", "sequential"):
+    sys.exit(f"RESTORE_ORDER={RESTORE_ORDER!r} must be random or sequential")
+RESTORE_COUNT = int(os.environ.get("RESTORE_COUNT", str(SEQS)))
+RESTORE_INTERVAL = float(os.environ.get("RESTORE_INTERVAL", "0.2"))
+RESTORE_MIN_HIT_RATE = float(os.environ.get("RESTORE_MIN_HIT_RATE", "0"))
+_SCRIPTS_MOUNT = "/opt/lmcache-fleet/scripts"
+
 servers, stimulators = [], []
 
 for i in range(1, NUM_SERVERS + 1):
@@ -422,7 +556,7 @@ for i in range(1, NUM_SERVERS + 1):
       - "127.0.0.1:{HTTP_BASE + i - 1}:8080"   # HTTP API on host for /status, /cache/objects
     volumes:
       - ../data/l2-server-{i}:/data/l2              # per-server L2 backend (fs adapter)
-{L2_PLUGIN_MOUNT}    healthcheck:
+{L2_PLUGIN_MOUNT}{QUIET_MOUNT}    healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck',timeout=2)"]
       interval: 5s
@@ -434,7 +568,7 @@ for i in range(1, NUM_SERVERS + 1):
       --host 0.0.0.0 --port 5555
       --http-host 0.0.0.0 --http-port 8080
       --chunk-size {CHUNK_SIZE}
-      --l1-size-gb {L1_GB}
+      --l1-size-gb {L1_GIB}
       --eviction-policy LRU
       --eviction-trigger-watermark {EVICT_WATERMARK}
       --supported-transfer-mode auto
@@ -445,24 +579,46 @@ for i in range(1, NUM_SERVERS + 1):
       --l2-adapter '{L2_ADAPTER_JSON}'
 """)
 
-    stimulators.append(f"""  stim-{i}:
-    image: {IMAGE}
-    profiles: [stim]
-{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so bench's CPU SHM path reaches the server
+    # Everything a client of server i needs, whichever operation it runs.
+    # The PID namespace is shared for the same reason the IPC one is, and the
+    # two go together. LMCache names each client's POSIX SHM segment
+    # /lmcache_kv_<pid>_<counter>, and a container's main process is always
+    # pid 1 -- so a store and a restore sharing the server's IPC namespace both
+    # ask for /lmcache_kv_1_0 and the second one dies with EEXIST. Sharing the
+    # server's PID namespace gives every client a distinct pid, and therefore a
+    # distinct segment name, however many of them there are.
+    _client = f"""{NO_ENTRYPOINT}{RUN_AS}    ipc: service:{name}          # share /dev/shm so the client's CPU SHM path reaches the server
+    pid: service:{name}          # distinct pids, so the clients' SHM names cannot collide
     shm_size: {SHM_SIZE}
     networks: [fleet]
+    volumes:
+      - ../scripts:{_SCRIPTS_MOUNT}:ro
+{QUIET_MOUNT}
     depends_on:
       {name}:
         condition: service_healthy
     command: >
-      /opt/venv/bin/lmcache bench server
+      /opt/venv/bin/python -u {_SCRIPTS_MOUNT}/stim.py
       --rpc-url tcp://{name}:5555
       --url {STIM_URL or f"http://{name}:8080"}
       --mode cpu --transfer-mode lmcache_driven
       --kvcache-shape-spec "{SHAPE_SPEC}"
       --num-tokens {NUM_TOKENS}
       --start {windows[i - 1][0]} --end {windows[i - 1][1]}
-      --interval 0.2
+"""
+    stimulators.append(f"""  stim-{i}:
+    image: {IMAGE}
+    profiles: [stim]
+{_client}      --op {STIM_OP} --interval {STIM_INTERVAL:g}
+""")
+    # Its own client index, so a restore running alongside the store does not
+    # register its workers under the ids the store client already holds.
+    stimulators.append(f"""  restore-{i}:
+    image: {IMAGE}
+    profiles: [restore]
+{_client}      --op restore --client-index 1
+      --order {RESTORE_ORDER} --count {RESTORE_COUNT} --seed {i}
+      --interval {RESTORE_INTERVAL:g} --min-hit-rate {RESTORE_MIN_HIT_RATE:g}
 """)
 
 compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
@@ -480,8 +636,8 @@ services:
   coordinator:
     image: {IMAGE}
     hostname: coordinator
-{NO_ENTRYPOINT}{RUN_AS}    networks: [fleet]
-    ports:
+{NO_ENTRYPOINT}{RUN_AS}{COORD_ENV}    networks: [fleet]
+{COORD_VOLUMES}    ports:
       - "127.0.0.1:{COORD_PORT}:{COORD_NET_PORT}"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
@@ -494,6 +650,7 @@ services:
       --host 0.0.0.0 --port {COORD_NET_PORT}
       --chunk-size {CHUNK_SIZE}
       --instance-timeout 30
+{COORD_FLAGS}
 
   prometheus:
     image: {PROM_IMAGE}
@@ -529,6 +686,12 @@ services:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/lmcache-fleet.json
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Grafana's own chatter. warn hides the plugin-update and flag-evaluation
+      # INFO lines; the manifest watcher logs AT warn every poll about finding
+      # zero manifests, which is just what a provisioned-only install looks
+      # like, so that one logger is filtered to error.
+      GF_LOG_LEVEL: "{GRAFANA_LOG_LEVEL}"
+      GF_LOG_FILTERS: "search-manifest-watcher:error"
     networks: [fleet]
     depends_on: [prometheus]
     ports:
@@ -583,9 +746,10 @@ here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Bind mounts must be writable by the container uid. Containers run as the
 # invoking user by default, so owner-only write is enough; only fall back to
 # world-writable when RUN_UID has been overridden to someone else.
-BIND_MODE = 0o755 if RUN_UID == str(os.getuid()) else 0o777
+BIND_MODE = 0o755 if str(os.getuid()) == RUN_UID else 0o777
 for sub in ([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
-            + ["prometheus", "grafana", "exporter"]):
+            + ["prometheus", "grafana", "exporter"]
+            + (["coordinator"] if COORD_CHECKPOINT else [])):
     d = os.path.join(here, "data", sub)
     os.makedirs(d, exist_ok=True)
     os.chmod(d, BIND_MODE)
@@ -622,8 +786,14 @@ print(f"  fleet covers {len(covered) * BLOCKS_PER_SEQ} unique blocks"
       f"{f'; {overlap * BLOCKS_PER_SEQ} blocks replicated' if overlap else ''}")
 if L2_PLUGIN:
     _delays = ", ".join(f"{k}={v:g}" for k, v in L2_DELAYS.items() if v) or "no delay"
-    print(f"L2: fs wrapped by lmcache_l2_sim "
+    print(f"L2: {_fs_spec['type']} wrapped by lmcache_l2_sim "
           f"(dedup={'on, ' + L2_LINK_MODE if L2_DEDUP else 'off'}; {_delays})"
-          f"{' — L2 contents are fake, bench checksum verification off' if L2_DEDUP else ''}")
+          f"{' — L2 contents are fake, checksum verification off' if L2_DEDUP else ''}")
 else:
-    print("L2: fs (real bytes on disk)")
+    print(f"L2: {_fs_spec['type']} (real bytes on disk)")
+if L2_CAPACITY_GIB:
+    print(f"L2 eviction: {L2_EVICT_POLICY} at {L2_EVICT_WATERMARK:.0%} of "
+          f"{L2_CAPACITY_GIB:g} GiB logical per server, "
+          f"evicting {L2_EVICT_RATIO:.0%} each time")
+else:
+    print("L2 eviction: off (L2_CAPACITY_GIB=0), L2 grows without bound")

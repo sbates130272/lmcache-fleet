@@ -11,6 +11,15 @@ Ages are measured by this process: a placement's age is the time since the
 exporter first saw it. Placements already present when the exporter starts are
 aged from that moment, and a restart resets every age.
 
+Departed instances. An MP server mints a new instance id every time it starts.
+When one leaves, the coordinator fences its L1 placements but deliberately
+keeps its L2 ones: L2 is storage that outlives the process, and those leave
+only through DELETE events. So the directory carries L2 placements owned by ids
+that no longer exist, and nothing will ever delete them. The per-server metrics
+here cover registered instances only; what departed ones left behind is
+published separately as lmcache_directory_departed_*, under the server name the
+instance had while it was registered, so a restart does not add a series.
+
 Stdlib only, so it runs in any Python image.
 """
 import json
@@ -28,12 +37,23 @@ PORT = int(os.environ.get("EXPORTER_PORT", "9105"))
 # A placement must be absent from this many consecutive polls before it counts
 # as removed: offset paging over a changing directory can skip an entry.
 MISSING_POLLS = int(os.environ.get("MISSING_POLLS", "2"))
+# How many of the most-reused keys to publish individually, with their hash,
+# where they sit and how old they are. Everything else here is an aggregate,
+# because a per-key series for a directory of this size would be a cardinality
+# disaster; this is bounded at N, but the hash and location labels still churn
+# as the ranking moves, so keep it small. 0 turns it off.
+TOP_REUSED = int(os.environ.get("TOP_REUSED", "10"))
 # Where first-seen times are checkpointed. Without this every restart would
 # reset each block to age zero, which is ruinous mid-experiment. Set empty to
 # disable. Times are wall-clock, so they survive across processes.
 STATE_PATH = os.environ.get("STATE_PATH", "/state/first_seen.json")
 STATE_SAVE_INTERVAL = float(os.environ.get("STATE_SAVE_INTERVAL", "60"))
 _SEP = "\x1f"
+# Server label for a departed instance this exporter never saw registered, so
+# it has no name for it. One fixed value rather than the raw instance id: ids
+# are unbounded across restarts, and a label that grows with every restart is
+# the problem the departed metrics exist to avoid.
+UNKNOWN_SERVER = "unknown"
 
 # Age bucket upper bounds in seconds, ascending, with an implicit +Inf band on
 # the end. Override with AGE_BOUNDS as a comma-separated list of durations, e.g.
@@ -121,6 +141,7 @@ class State:
         self.first_seen = {}   # placement id -> time first seen
         self.missing = {}      # placement id -> consecutive polls absent
         self.labels = {}       # placement id -> (server, tier, backend)
+        self.names = {}        # instance id -> server name it registered under
         self.added = {}        # (server, tier) -> count
         self.removed = {}      # (server, tier) -> count
         self.primed = False    # first poll done; later arrivals count as added
@@ -148,6 +169,9 @@ class State:
             self.labels[pid] = tuple(labels)
         self.added = {tuple(k.split(_SEP)): v for k, v in saved.get("added", {}).items()}
         self.removed = {tuple(k.split(_SEP)): v for k, v in saved.get("removed", {}).items()}
+        # Absent from checkpoints written before departed instances were
+        # tracked; those instances read as UNKNOWN_SERVER until they age out.
+        self.names = dict(saved.get("names", {}))
         self.loaded = len(self.first_seen)
         # Anything already known is not a new arrival on the first poll back.
         self.primed = bool(self.first_seen)
@@ -162,6 +186,7 @@ class State:
                            for pid in self.first_seen},
             "added": {_SEP.join(k): v for k, v in self.added.items()},
             "removed": {_SEP.join(k): v for k, v in self.removed.items()},
+            "names": self.names,
         }
         tmp = STATE_PATH + ".tmp"
         try:
@@ -176,13 +201,22 @@ class State:
 
 def poll(state):
     t0 = time.time()
-    servers = {i["instance_id"]: i.get("ip") or i["instance_id"]
-               for i in get("/instances").get("instances", [])}
+    live = {i["instance_id"]: i.get("ip") or i["instance_id"]
+            for i in get("/instances").get("instances", [])}
+    # Every name ever seen registered, so a departed instance keeps the one it
+    # had. Only this thread writes state.names, so reading it unlocked is safe.
+    names = {**state.names, **live}
 
     seen = {}
     sizes = {}
-    keys, tokens = 0, 0
+    keys, tokens, departed_only = 0, 0, 0
     replicas, tier_sets, access = {}, {}, {}
+    departed_pids, departed_ids = set(), set()
+    departed_count, departed_bytes = {}, {}
+    # Only the current top few are kept, but the ranking is not known until the
+    # last page has been read, so every key's hash, holders and pids are held
+    # until then. Dropped as soon as the top N is picked.
+    reuse = []
     offset = 0
     while True:
         page = get(f"/directory/keys?limit={PAGE_SIZE}&offset={offset}")
@@ -195,25 +229,47 @@ def poll(state):
                 continue
             keys += 1
             tokens += k.get("num_tokens", 0)
-            holders = {p["instance_id"] for p in placements}
-            n = len(holders)
-            r = str(n) if n < 3 else "3+"
-            replicas[r] = replicas.get(r, 0) + 1
-            ts = "+".join(sorted({p["tier"] for p in placements}))
-            tier_sets[ts] = tier_sets.get(ts, 0) + 1
             a = bucket(k.get("access_count", 0), ACCESS_BUCKETS)
             access[a] = access.get(a, 0) + 1
+            # Replication and tier sets describe the registered fleet. A copy
+            # left by a departed instance is not a server holding the key, and
+            # counting it made every restarted server look like a replica of
+            # its own previous run.
+            held = [p for p in placements if p["instance_id"] in live]
+            if held:
+                n = len({p["instance_id"] for p in held})
+                r = str(n) if n < 3 else "3+"
+                replicas[r] = replicas.get(r, 0) + 1
+                ts = "+".join(sorted({p["tier"] for p in held}))
+                tier_sets[ts] = tier_sets.get(ts, 0) + 1
+            else:
+                departed_only += 1
+            if TOP_REUSED and held:
+                reuse.append((k.get("access_count", 0), ident["chunk_hash_hex"],
+                              sorted({(live[p["instance_id"]], p["tier"]) for p in held}),
+                              [kid + (p["instance_id"], p["tier"], p.get("backend", ""))
+                               for p in held]))
             for p in placements:
-                pid = kid + (p["instance_id"], p["tier"], p.get("backend", ""))
-                seen[pid] = (servers.get(p["instance_id"], p["instance_id"]),
-                             p["tier"], p.get("backend", ""))
-                sizes[pid] = p.get("size_bytes", 0)
+                inst, tier, backend = p["instance_id"], p["tier"], p.get("backend", "")
+                pid = kid + (inst, tier, backend)
+                if inst in live:
+                    seen[pid] = (live[inst], tier, backend)
+                    sizes[pid] = p.get("size_bytes", 0)
+                else:
+                    lbl = (names.get(inst, UNKNOWN_SERVER), tier, backend)
+                    departed_pids.add(pid)
+                    departed_ids.add(inst)
+                    departed_count[lbl] = departed_count.get(lbl, 0) + 1
+                    departed_bytes[lbl] = departed_bytes.get(lbl, 0) + p.get("size_bytes", 0)
         offset += len(page["keys"])
         if not page["keys"] or offset >= page["total"]:
             break
 
     now = time.time()
     with state.lock:
+        # Forget a name once its instance is neither registered nor holding
+        # anything, or the map would grow by one entry per restart for good.
+        state.names = {i: n for i, n in names.items() if i in live or i in departed_ids}
         for pid, lbl in seen.items():
             if pid not in state.first_seen:
                 state.first_seen[pid] = now
@@ -223,6 +279,15 @@ def poll(state):
                     state.added[key] = state.added.get(key, 0) + 1
             state.missing.pop(pid, None)
         for pid in [p for p in state.first_seen if p not in seen]:
+            if pid in departed_pids:
+                # The instance left; the placement is still in the directory.
+                # It moves to the departed tallies without counting as
+                # removed, so the removal counters keep meaning one thing: a
+                # block the directory no longer lists, which for L2 is an
+                # eviction or a delete.
+                del state.first_seen[pid], state.labels[pid]
+                state.missing.pop(pid, None)
+                continue
             state.missing[pid] = state.missing.get(pid, 0) + 1
             if state.missing[pid] >= MISSING_POLLS:
                 key = state.labels[pid][:2]
@@ -297,10 +362,47 @@ def poll(state):
                [({"server": s_, "tier": t_}, v) for (s_, t_), v in sorted(age_count.items())])
         metric(P + "oldest_placement_age_seconds", "gauge", "Age of the longest-lived placement.",
                [({"server": s, "tier": t}, round(v, 1)) for (s, t), v in sorted(oldest.items())])
-        metric(P + "keys_by_replicas", "gauge", "Keys by the number of servers holding them.",
+        metric(P + "keys_by_replicas", "gauge",
+               "Keys by the number of registered servers holding them.",
                [({"replicas": r}, replicas.get(r, 0)) for r in ("1", "2", "3+")])
-        metric(P + "keys_by_tiers", "gauge", "Keys by the set of tiers they are placed in.",
+        metric(P + "keys_by_tiers", "gauge",
+               "Keys by the set of tiers registered servers hold them in.",
                [({"tiers": t}, v) for t, v in sorted(tier_sets.items())])
+        metric(P + "departed_instances", "gauge",
+               "Instances no longer registered that still own placements in the directory.",
+               [({}, len(departed_ids))])
+        metric(P + "departed_placements", "gauge",
+               "Placements owned by instances that are no longer registered, under the "
+               "server name the instance had. Nothing will delete these.",
+               [({"server": s, "tier": t, "backend": b}, v)
+                for (s, t, b), v in sorted(departed_count.items())])
+        metric(P + "departed_placement_bytes", "gauge",
+               "Logical bytes of the placements owned by departed instances.",
+               [({"server": s, "tier": t, "backend": b}, v)
+                for (s, t, b), v in sorted(departed_bytes.items())])
+        metric(P + "keys_departed_only", "gauge",
+               "Keys whose every placement is owned by a departed instance.",
+               [({}, departed_only)])
+        # The most-reused keys, named individually: hash, where the copies sit,
+        # how old the oldest copy is. Ties are broken by hash so the ranking is
+        # stable between polls rather than shuffling among equal counts.
+        top = sorted(reuse, key=lambda r: (-r[0], r[1]))[:TOP_REUSED]
+        rank_samples, rank_ages = [], []
+        for position, (accesses, chunk_hash, places, pids) in enumerate(top, 1):
+            labels = {
+                "rank": f"{position:02d}",
+                "hash": chunk_hash[:16],
+                "location": ", ".join(f"{s} {t}" for s, t in places),
+            }
+            rank_samples.append((labels, accesses))
+            ages_seen = [now - state.first_seen[p] for p in pids if p in state.first_seen]
+            rank_ages.append((labels, round(max(ages_seen), 1) if ages_seen else 0))
+        metric(P + "top_reused_accesses", "gauge",
+               "Access count of the most-reused keys, by hash and where they sit. "
+               "Rank is zero-padded so it sorts as a string.", rank_samples)
+        metric(P + "top_reused_age_seconds", "gauge",
+               "Age of the oldest copy of each of those keys, labelled "
+               "identically so the two can be shown as one table.", rank_ages)
         metric(P + "keys_by_access_count", "gauge", "Keys by coordinator-reported access count.",
                [({"accesses": label}, access.get(label, 0)) for label, _ in ACCESS_BUCKETS])
         metric(P + "placements_added_total", "counter",

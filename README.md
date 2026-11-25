@@ -1,25 +1,33 @@
 # LMCache Fleet
 
-<!-- The smoke-test lane runs on push to main as well as on PRs, so its badge
-     is pinned with ?branch=main. The three lint lanes are PR-only: they have
-     no push-to-main and no cron trigger, so they have no run on main at all,
-     and shields renders "no status" for a pinned badge. -->
+<!-- Every CI lane, in one row. Smoke Test and Released Check run on push to
+     main (Released Check also on a weekly schedule), so both are pinned with
+     ?branch=main. The lint lanes are PR-only: they have no push-to-main and no
+     cron trigger, so they have no run on main at all, and shields renders
+     "no status" for a pinned badge.
+
+     The lowercase "passing" is shields', not a typo: for a dynamic badge the
+     message comes from the upstream API and shields has no case option --
+     messageCase, textCase, upperCase and an explicit message= are all ignored.
+     Capitalising it would mean an endpoint badge fed by JSON we publish, which
+     would then only refresh when a lane runs, and a stale "Passing" over a
+     broken lane is worse than a lowercase honest one. -->
 [![Smoke Test](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-smoke-test.yml?branch=main&label=smoke-test&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-smoke-test.yml)
 [![Docker Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-docker-lint.yml?label=docker-lint&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-docker-lint.yml)
 [![Shell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-shell-check.yml?label=shell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-shell-check.yml)
 [![Spell Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-spell-check.yml?label=spell-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-spell-check.yml)
+[![Ruff](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-ruff.yml?label=ruff&style=flat-square&logo=ruff&logoColor=white)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-ruff.yml)
+[![Python Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-python-check.yml?label=python-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-python-check.yml)
 [![Package Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-package-check.yml?label=package-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-package-check.yml)
-<!-- Released Check runs weekly on a schedule and on main, so it is pinned to
-     main like smoke-test. It reports on the plugin as published, which is why
-     it sits next to the PyPI version badge rather than with the lint lanes. -->
 [![Released Check](https://img.shields.io/github/actions/workflow/status/sbates130272/lmcache-fleet/lmcache-fleet-released-check.yml?branch=main&label=released-check&style=flat-square)](https://github.com/sbates130272/lmcache-fleet/actions/workflows/lmcache-fleet-released-check.yml)
-[![PyPI](https://img.shields.io/pypi/v/lmcache-l2-sim?style=flat-square&label=lmcache-l2-sim&color=blue)](https://pypi.org/project/lmcache-l2-sim/)
 
-<!-- Not a workflow status: it links to the dashboard the smoke-test lane
-     screenshotted on its last run on main, republished to gh-pages because
-     an artifact URL is per-run and expires. Static label on purpose — the
-     smoke-test badge above already reports whether that run passed. -->
+<!-- What the fleet produces, rather than whether CI is green: the dashboard
+     the smoke-test lane screenshotted on its last run on main, republished to
+     gh-pages because an artifact URL is per-run and expires, and the plugin as
+     published. The Grafana label is static on purpose — the smoke-test badge
+     above already reports whether that run passed. -->
 [![Live Dashboard](https://img.shields.io/badge/Live%20Dashboard-Grafana-orange?style=flat-square&logo=grafana&logoColor=white)](https://sbates130272.github.io/lmcache-fleet/)
+[![PyPI](https://img.shields.io/pypi/v/lmcache-l2-sim?style=flat-square&label=lmcache-l2-sim&color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/lmcache-l2-sim/)
 
 [![License](https://img.shields.io/github/license/sbates130272/lmcache-fleet?label=License&style=flat-square)](LICENSE)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8-blue?style=flat-square)](https://github.com/LMCache/LMCache/releases/tag/v0.5.8)
@@ -29,15 +37,17 @@
 This repository contains the tools needed to generate and deploy a
 programmable-sized LMCache MP cluster: N cache servers (L1 DRAM + L2 fs adapter),
 one coordinator building the fleet-wide key directory, and per-server one-shot
-stimulators (`lmcache bench server --mode cpu`, no vLLM) that STORE synthetic KV
-chunks. Eviction past the L1 watermark spills blocks to L2; the coordinator
-directory tracks both placements.
+stimulators (no vLLM) that store synthetic KV chunks and, separately, fetch
+them back. Eviction past the L1 watermark spills blocks to L2, an optional L2
+capacity evicts from there in turn, and the coordinator directory tracks both
+placements.
 
 ## Usage
 
 ```bash
 make up NUM=4 SEQ=20            # generate, start fleet + prometheus + grafana, print the URL
-make stim NUM=4 SEQ=20          # make stores
+make stim NUM=4 SEQ=20          # store KV blocks (stores only, nothing read back)
+make restore NUM=4 SEQ=20       # fetch blocks back, from L1 and through L2
 make report NUM=4               # directory: per-instance L1/L2 placements
 make check NUM=4                # same directory, as a pass/fail assertion
 make dash                       # Grafana URL (compose picks a free host port)
@@ -53,10 +63,12 @@ make targets pass `-f` themselves.
 ```
 .github/     CI: one smoke-test lane that runs a real fleet, three lint lanes
 docker/      Dockerfile for the slim CPU-only image; generated docker-compose.yml
-scripts/     gen_compose.py (writes the compose file), report.sh, check_fleet.py
+scripts/     gen_compose.py (writes the compose file), stim.py (the stimulator),
+             report.sh, check_fleet.py
 monitoring/  prometheus config (generated), directory exporter, Grafana provisioning
 plugins/     lmcache_l2_sim, the out-of-tree dedup + latency L2 adapter
-data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter state
+data/        bind mounts: L2 blobs, Prometheus TSDB, Grafana state, exporter
+             state, coordinator checkpoint
 ```
 
 ## The Image
@@ -96,7 +108,7 @@ L2_DEDUP=1 make up NUM=2 SEQ=40
 L2_DEDUP=1 make stim NUM=2 SEQ=40
 ```
 
-Same run, stock vs dedup (2 servers, `L1_GB=0.05 SEQ=40`):
+Same run, stock vs dedup (2 servers, `L1_GIB=0.05 SEQ=40`):
 
 | | stock `fs` | `L2_DEDUP=1` |
 | --- | --- | --- |
@@ -118,6 +130,118 @@ checksum verification whenever dedup is on. Do not point a real model at it.
 
 See [plugins/README.md](plugins/README.md) for the full parameter list, using the
 adapter outside this demo, and the upstreaming note.
+
+## L2 Capacity and Eviction
+
+By default L2 grows without bound. `L2_CAPACITY_GIB` gives each server an L2
+capacity, and LMCache then evicts from L2 once usage crosses a watermark:
+
+```bash
+L2_DEDUP=1 L1_GIB=0.05 L2_CAPACITY_GIB=0.1 make run NUM=2 SEQ=120
+```
+
+Each server stores 240 blocks (240 MiB logical) against 0.1 GiB. Verified on
+that run: eviction fires 35 times per server, each ends holding 80 L2 blocks
+(78% of capacity), the coordinator's directory agrees at 80 L2 placements, and
+the exporter counts the other 160 as removed. `L2_EVICT_WATERMARK` (0.8),
+`L2_EVICT_RATIO` (0.2) and `L2_EVICT_POLICY` (`LRU` or `ARC`) tune it.
+
+Capacity is counted in **logical** bytes — what the server believes it stored.
+Under dedup that is the modelled size, not the megabyte of real disk, so a
+terabyte tier can be sized and filled on a laptop. Without dedup the same knob
+bounds real bytes: the run above ends at 81 MB on disk per server.
+
+Setting it changes three things in the generated `--l2-adapter` spec, and all
+three are needed. Get one wrong and nothing is evicted:
+
+- The backing adapter becomes `fs_native`. Plain `fs` declares no capacity, so
+  LMCache logs `does not support global eviction` and skips it.
+- `max_capacity_gb` goes on that backing spec.
+- The `eviction` block goes on the **outermost** spec. Inside the plugin's
+  `inner` it parses cleanly and is then ignored, with usage running straight
+  past the capacity and no warning from LMCache.
+
+Where to watch it: `make report` prints each server's usage against capacity
+(read from `/status` — the servers export L2 usage to Prometheus, but not the
+capacity or watermark). On the dashboard, "L2 Bytes per Server" flattens at the
+watermark instead of climbing, "Block Churn per Minute" grows an "L2 Removed"
+line, and "Oldest L2 Block per Server" stops rising.
+
+One gap: blocks left on disk by an earlier run of the same server are not
+counted towards its usage, so eviction never reclaims them. `make clean`
+between runs when capacity matters.
+
+## Storing and Restoring
+
+Stores and restores are separate jobs, so the write side and the read side of
+the cache can be driven apart:
+
+```bash
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=60     # fleet up, stim-N store their windows
+L2_DEDUP=1 L1_GIB=0.05 make restore NUM=2 SEQ=60 # restore-N fetch blocks back
+```
+
+`stim-N` looks each sequence in its window up and stores what is missing.
+`restore-N` looks sequences from the same window up and retrieves what is
+there, the way an engine pulls a prefix back, and stores nothing. A block still
+in L1 is served from L1; one that has spilled is loaded from L2 into L1 first,
+which in turn evicts something else from L1. Run `make restore` after the
+stores, or alongside them. Pass it the same variables as the run it follows:
+the compose file is regenerated, and a changed server definition would restart
+the servers.
+
+Both are [scripts/stim.py](scripts/stim.py), which drives the client inside
+`lmcache bench server` one operation at a time. The bench itself is not used
+because it is a sanity test with one fixed case: store a sequence, then read
+the same one straight back. Every block is then read while it is still in L1,
+L2 never serves a read, and the two rates cannot be separated. `STIM_OP=verify`
+brings that case back when the point is to check that bytes round-trip.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `RESTORE_ORDER` | `random` | `random` samples the window with replacement; `sequential` walks it, oldest first |
+| `RESTORE_COUNT` | `SEQ` | requests each `restore-N` sends |
+| `RESTORE_INTERVAL` | `0.2` | seconds between them; `STIM_INTERVAL` is the store side |
+| `RESTORE_MIN_HIT_RATE` | `0` | a `restore-N` exits non-zero below this fraction of chunks found |
+
+Each stimulator ends with one JSON line in its log — requests, chunks hit,
+stored and retrieved, hit rate, and p50/p99 latency per operation:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile restore logs | grep '{"op"'
+```
+
+A restore cannot find what L2 eviction has already taken, so with
+`L2_CAPACITY_GIB` set the hit rate is below 1 by design. On the dashboard,
+"Chunks Retrieved by Clients/Second" is the read side as a whole, "L2 to L1
+Loads/Second" is the part that had to come from L2, and "Lookup Hit
+Tokens/Second by Tier" splits the hits by tier.
+
+Each server has its own L2 directory, so a restore only finds what *its*
+server stored: `restore-N` reads the window `stim-N` wrote.
+
+## Surviving a Coordinator Restart
+
+The coordinator's key directory is derived state, rebuilt from the cache
+events the servers report, so losing it costs hit rate rather than
+correctness. But a restart otherwise starts cold, and on a fleet that has been
+storing for an hour that means the dashboard and `make report` read empty
+until the servers report again.
+
+`COORD_CHECKPOINT` (on by default) points `--checkpoint-path` at
+`data/coordinator/checkpoint.json`, written every
+`COORD_CHECKPOINT_INTERVAL` seconds (60; 0 writes only on a clean stop).
+`--metadata-path` goes beside it for operator-set state — L2 pins and
+per-`cache_salt` quotas — which is written when it changes rather than on a
+timer, so the file only appears once something sets one.
+
+Verified by storing 80 keys, killing the coordinator with `SIGKILL` so there
+was no clean stop, and restarting it: the directory came back at 80 keys.
+
+Both files live under `data/`, so `make clean` removes them with the rest of a
+run's state rather than leaving a stale checkpoint for the next fleet to
+resume from. `COORD_CHECKPOINT=0` turns it off and the coordinator keeps
+nothing.
 
 ## Monitoring the Fleet
 
@@ -192,9 +316,29 @@ The coordinator's own *metrics* have no per-server view of L2:
 `main` as well as v0.5.8. The per-server L2 numbers therefore come from the
 directory exporter, which reads them from the directory listing instead.
 
+**The most reused blocks, named.** Everything else the exporter publishes is
+an aggregate, because a series per key over a directory of this size would be
+a cardinality disaster. The "Most Reused Blocks" table is the exception: the
+top `TOP_REUSED` keys (10; 0 disables) by access count, each with its chunk
+hash, every server and tier holding a copy, and the age of its oldest copy.
+Ties break by hash so the ranking does not shuffle between polls. The hash and
+location labels still churn as the ranking moves, which is why it stays small.
+
+**Restarted servers.** A server takes a new instance id every time it starts.
+When one leaves, the coordinator drops its L1 placements but keeps its L2 ones
+on purpose — L2 outlives the process — so the directory goes on listing L2
+blocks owned by ids that no longer exist. The exporter's per-server metrics
+cover registered instances only, and what departed ones left behind is
+published as `lmcache_directory_departed_*` under the server name the instance
+had, charted in the last row of the dashboard. A restart therefore adds no
+series and no legend entry. Nothing evicts those blocks: no running server
+counts them towards its L2 usage, so they stay until `make clean`. A restart
+is also not counted as L2 churn, which leaves "L2 Removed" meaning evicted or
+deleted.
+
 ## Reporting on the Fleet
 
-`report.sh` output (verified on 2 servers, L1_GB=0.05, SEQ=40, 512 tokens/req):
+`report.sh` output (verified on 2 servers, L1_GIB=0.05, SEQ=40, 512 tokens/req):
 
 ```
 fleet: 2 registered instance(s)
@@ -212,13 +356,65 @@ listing: every server registered, keys tracked, and *each* server holding both
 L1 and L2 placements. The per-server split is the part worth asserting — a
 fleet where one server absorbed every store still shows healthy totals.
 
+Both stimulators print a progress line every `--progress-every` seconds (15,
+0 to disable) and one JSON summary when they finish — requests, chunks hit,
+stored and retrieved, hit rate and per-operation p50/p99:
+
+```bash
+make logs                     # follows every service, stimulators included
+docker compose -f docker/docker-compose.yml --profile stim --profile restore \
+  logs | grep '{"op"'         # just the summaries
+```
+
+`make logs` names both profiles explicitly: a service behind a compose profile
+is invisible to `compose logs` otherwise, which is how the stimulators —
+the only place those summaries appear — used to be filtered out.
+
+## Quieter Logs
+
+Prometheus scrapes `/metrics`, compose probes `/healthcheck`, the servers
+heartbeat and the exporter pages `/directory/keys`, all every few seconds and
+all logged by uvicorn at INFO. Measured over three minutes on a two-server
+fleet: ~330 lines from the coordinator alone, ~72 from each server.
+
+LMCache hardcodes `access_log=True` with no flag to turn it down, so
+[docker/quiet/sitecustomize.py](docker/quiet/sitecustomize.py) goes on
+`PYTHONPATH` instead — Python imports a module of that name at interpreter
+startup, early enough to attach a filter to the access logger. Only polled
+paths returning under 400 are dropped, so a failing healthcheck or a 404 on
+`/metrics` still prints.
+
+`QUIET_ACCESS_LOG=0` turns it off, `QUIET_ACCESS_PATHS` overrides the list
+(an entry starting with `*` matches as a suffix, which is how heartbeats go
+without taking `POST /instances` with them), and `GRAFANA_LOG_LEVEL` sets
+Grafana's own.
+
 ## Continuous Integration
 
-Five lanes, all on GitHub-hosted `ubuntu-24.04`. Four are cheap PR gates —
+Eight lanes, all on GitHub-hosted `ubuntu-24.04`. Six are cheap PR gates —
 codespell against `.codespellrc`, shellcheck over `scripts/*.sh`, hadolint
 plus `docker compose config` on the Dockerfile and the *generated* compose file
-(both the stock and `L2_DEDUP=1` variants, since dedup takes a different branch
-in the generator), and the packaging lane below.
+(both the stock and `L2_CAPACITY_GIB` variants, since a capacity swaps the
+backing adapter), ruff and the Python lane below, and the packaging one after.
+
+`lmcache-fleet - Ruff` lints every tracked `.py` against
+[ruff.toml](ruff.toml). Both the ruff version and the rule selection are
+pinned, because ruff widens its defaults between releases and neither should
+be able to fail the lane on code nobody touched. `E501` is deliberately out of
+the selection, as it is from ruff's own default `E` subset: line length is a
+formatter's job and this repo runs no formatter. Two rules are switched off
+with the reasons recorded in the config — `SIM105`, because the two
+`try/except/pass` sites are hot loops where `contextlib.suppress` would
+allocate per iteration, and `I001` for the plugin, which keeps LMCache's own
+import grouping so it stays upstreamable.
+
+`lmcache-fleet - Python Check` asserts the committed dashboard JSON still
+matches `build-dashboard.py`, and unit-checks the access-log filter. The first
+is the reason the lane exists: the dashboard is generated *and* committed, so
+editing the builder without regenerating leaves it silently on the old panels
+with a clean-looking diff. The filter check matters for the same reason — a
+broken `sitecustomize.py` does not stop a container starting, so the smoke
+test would stay green while the logs quietly went back to being noisy.
 
 `lmcache-fleet - Package Check` runs `make dist` and `make publish-precheck`,
 then exercises both halves of the publish path without touching PyPI: it
@@ -233,10 +429,19 @@ in one of two shapes:
 
 ```bash
 # on a PR -- gates the merge, so it stays small and quick
-L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=40
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=40
 # on main -- gates nothing, and is where the published dashboard comes from
-L2_DEDUP=1 L1_GB=0.05 make run NUM=4 SEQ=200
+L2_DEDUP=1 L1_GIB=0.05 L2_CAPACITY_GIB=0.2 make run NUM=4 SEQ=200
 ```
+
+A PR runs its shape twice, side by side: once with L2 unbounded and once with
+`L2_CAPACITY_GIB=0.05`, because the two are different code paths end to end — a
+different backing adapter, an eviction controller that either exists or does
+not. `main` runs only the capped one, so the published dashboard shows L2
+turning over. In the capped runs `make check` also requires every server to
+have actually evicted and to sit within its capacity; both tiers fill whether
+or not a capacity is enforced, so without that the run would pass on a fleet
+that ignored it.
 
 The PR shape is the verified recipe above; measured at 4m46s cold, of which
 2m31s was the image build, so roughly 2m40s once the layer cache is warm. The
@@ -245,7 +450,7 @@ runs long enough that the dashboard has a real curve on it rather than a spike.
 
 The image is built in-workflow behind a buildx `type=gha` cache, which means
 the Dockerfile is continuously tested rather than only when someone remembers.
-`L1_GB=0.05` makes the sequences overflow L1, so the run exercises the eviction
+`L1_GIB=0.05` makes the sequences overflow L1, so the run exercises the eviction
 and L2 spill paths rather than just starting cleanly. And `L2_DEDUP=1` routes
 L2 through the sim adapter, so the spill costs ~1 MB per server instead of
 hundreds — the runner's disk never becomes the constraint.
@@ -284,10 +489,10 @@ has described shows up under "undocumented" rather than going unmentioned.
 `NUM` and `SEQ` are make variables; everything else is an environment variable:
 
 ```bash
-L2_DEDUP=1 L1_GB=0.05 make run NUM=2 SEQ=6000
+L2_DEDUP=1 L1_GIB=0.05 make run NUM=2 SEQ=6000
 ```
 
-To force visible L2 spill on a small host: `L1_GB=0.05 SEQ=40`.
+To force visible L2 spill on a small host: `L1_GIB=0.05 SEQ=40`.
 
 ## Key Space
 

@@ -1,0 +1,32 @@
+# Ruff settings for the fleet's Python: the generator, the exporter, the
+# dashboard builder, the stimulator and the L2 plugin.
+#
+# Pinned explicitly rather than left to ruff's defaults, which have widened
+# between releases -- an unpinned `select` means a ruff upgrade can fail CI on
+# code nobody touched.
+
+# The plugin's requires-python floor. The exporter is stdlib-only and runs on
+# whatever python:3-alpine ships, which is always newer.
+target-version = "py310"
+
+[lint]
+# E501 (line too long) is deliberately absent, as it is from ruff's own default
+# E subset: line length belongs to a formatter, and this repo does not run one.
+# The code is largely inside 88 columns (p95 is 85) with a tail of long PromQL
+# expressions and f-strings that reflowing would only make harder to read.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+
+ignore = [
+    # try/except/pass sits in two hot loops in the L2 adapter: the poller loop
+    # in _pump_loop, and the per-object walk on the load path.
+    # contextlib.suppress builds a context manager on every iteration, where
+    # the bare try costs nothing in the case that always happens.
+    "SIM105",
+]
+
+[lint.per-file-ignores]
+# The plugin keeps LMCache's own import grouping -- the "# Future",
+# "# Standard" and "# First Party" headers -- because it is written to be
+# upstreamable. Ruff's isort reorders across those headers and leaves them
+# labelling the wrong block.
+"plugins/**" = ["I001"]
