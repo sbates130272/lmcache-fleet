@@ -76,7 +76,7 @@
         "uid": "lmcache-prom"
       },
       "gridPos": {
-        "h": 9,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 1
@@ -144,6 +144,7 @@
               "l2_local": "L2, Local to a Server",
               "l2_shared": "L2, Shared between Servers",
               "l2_sim": "L2 Simulation",
+              "aggregation": "Aggregation",
               "workload": "Workload",
               "image": "Image"
             },
@@ -154,8 +155,9 @@
               "l2_local": 3,
               "l2_shared": 4,
               "l2_sim": 5,
-              "workload": 6,
-              "image": 7
+              "aggregation": 6,
+              "workload": 7,
+              "image": 8
             }
           }
         },
@@ -193,7 +195,7 @@
         "h": 4,
         "w": 3,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -258,7 +260,7 @@
         "h": 4,
         "w": 3,
         "x": 3,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -333,7 +335,7 @@
         "h": 4,
         "w": 3,
         "x": 6,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -458,7 +460,7 @@
         "h": 4,
         "w": 3,
         "x": 9,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -527,7 +529,7 @@
         "h": 4,
         "w": 3,
         "x": 12,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -596,7 +598,7 @@
         "h": 4,
         "w": 3,
         "x": 15,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -671,7 +673,7 @@
         "h": 4,
         "w": 3,
         "x": 18,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -746,7 +748,7 @@
         "h": 4,
         "w": 3,
         "x": 21,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -805,18 +807,784 @@
     {
       "id": 11,
       "type": "row",
+      "title": "Whole Fleet (Summed across Coordinators by the Fleet Aggregator)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Distinct Blocks",
+      "description": "Blocks held anywhere in the fleet, each counted once however many coordinators track a copy. Estimated from sketches the aggregators merge, so within about 1% rather than exact.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"all\"}",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Blocks, Added Up",
+      "description": "What you get by adding the coordinators' own key counts: a block under several of them counts once for each.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_sum{root=\"true\"}",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Copies beyond the First",
+      "description": "The difference between the two tiles to the left: copies of blocks that some other coordinator's servers already hold. Content the fleet stores more than once because no one coordinator can see it is shared.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_duplicated{root=\"true\"}",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Distinct Blocks in Shared L2",
+      "description": "Distinct blocks in the L2 tier servers share. Every coordinator tracks the shared tier separately, so this is the only count of what it really holds.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"l2_shared\"}",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Coordinators Summarized",
+      "description": "Coordinators whose directory is in the fleet totals, and how many of those have stopped being refreshed somewhere on the way up. A stale one is still counted, from its last summary.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "no data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#dc3c3d",
+                "value": null
+              },
+              {
+                "color": "#0aac23",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fresh"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#dc3c3d",
+                      "value": null
+                    },
+                    {
+                      "color": "#0aac23",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Stale"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#0aac23",
+                      "value": null
+                    },
+                    {
+                      "color": "#dc3c3d",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "vertical",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_coordinators{root=\"true\"} - lmcache_fleet_coordinators_stale{root=\"true\"}",
+          "instant": true,
+          "legendFormat": "Fresh"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_coordinators_stale{root=\"true\"}",
+          "instant": true,
+          "legendFormat": "Stale"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Summary Age",
+      "description": "Age of the oldest coordinator summary in the fleet totals. Each level adds its own polling interval to the exporter's.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "no data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0aac23",
+                "value": null
+              },
+              {
+                "color": "#fbb315",
+                "value": 600
+              },
+              {
+                "color": "#dc3c3d",
+                "value": 1800
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_summary_age_seconds{root=\"true\"}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Distinct Blocks, and Where They Are Held",
+      "description": "Distinct blocks across the fleet over time, overall and by where a copy is held; a block in L1 and L2 appears under both. The gap between Anywhere and Coordinators Added Up is content held under more than one coordinator.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "gradientMode": "none",
+            "lineInterpolation": "linear",
+            "pointSize": 8,
+            "axisBorderShow": false,
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Anywhere"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L1 (CPU DRAM)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L2 (Local to a Server)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L2 (Shared)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Coordinators Added Up"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#c98500"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"all\"}",
+          "legendFormat": "Anywhere"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"l1\"}",
+          "legendFormat": "L1 (CPU DRAM)"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"l2\"}",
+          "legendFormat": "L2 (Local to a Server)"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_distinct{root=\"true\",place=\"l2_shared\"}",
+          "legendFormat": "L2 (Shared)"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "lmcache_fleet_blocks_sum{root=\"true\"}",
+          "legendFormat": "Coordinators Added Up"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Most Reused Blocks, Fleet-Wide",
+      "description": "The blocks served most often across the whole fleet: accesses summed over every coordinator that tracks a copy, and how many do. Each coordinator contributes its own hundred most reused and the lists are merged on the way up, so a block that is nowhere in a coordinator's top hundred but adds up across many is missed. The per-coordinator table further down cannot rank across coordinators at all.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "lmcache-prom"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Rank"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Coordinators"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Accesses"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Rank",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "rank": "Rank",
+              "hash": "Hash",
+              "pods": "Coordinators",
+              "Value": "Accesses"
+            },
+            "indexByName": {
+              "rank": 0,
+              "hash": 1,
+              "pods": 2,
+              "Value": 3
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "lmcache-prom"
+          },
+          "expr": "sum by (rank, hash, pods) (lmcache_fleet_top_reused_accesses{root=\"true\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
       "title": "Fleet State (Coordinator and Servers)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 31
       },
       "panels": []
     },
     {
-      "id": 12,
+      "id": 21,
       "type": "stat",
       "title": "Keys Tracked",
       "description": "Unique keys the coordinator's directory holds at least one placement for. Summed over coordinators when there are several, and each tracks only its own servers, so a key held under two of them counts twice.",
@@ -828,7 +1596,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 15
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -876,7 +1644,7 @@
       ]
     },
     {
-      "id": 13,
+      "id": 22,
       "type": "stat",
       "title": "Servers Registered",
       "description": "MP servers currently heartbeating to the coordinator.",
@@ -888,7 +1656,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 15
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -936,7 +1704,7 @@
       ]
     },
     {
-      "id": 14,
+      "id": 23,
       "type": "stat",
       "title": "L1 Placements",
       "description": "Key copies resident in some server's L1 DRAM tier.",
@@ -948,7 +1716,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 15
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -996,7 +1764,7 @@
       ]
     },
     {
-      "id": 15,
+      "id": 24,
       "type": "stat",
       "title": "L2 Placements",
       "description": "Key copies written through to an L2 backend. Counts only what was written while this coordinator has been up: nothing scans L2 at startup, so .data files left by an earlier run read as 0 here.",
@@ -1008,7 +1776,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 15
+        "y": 32
       },
       "fieldConfig": {
         "defaults": {
@@ -1056,7 +1824,7 @@
       ]
     },
     {
-      "id": 16,
+      "id": 25,
       "type": "timeseries",
       "title": "Fleet Keys by Tier",
       "description": "Coordinator's own view. A placement is one place a key is stored: L1 on one server, or one L2 backend. Stacked, so total height is every copy the fleet holds.",
@@ -1068,7 +1836,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 19
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -1173,7 +1941,7 @@
       ]
     },
     {
-      "id": 17,
+      "id": 26,
       "type": "timeseries",
       "title": "Fleet Bytes by Tier",
       "description": "Bytes the fleet reports holding, as aggregated by the coordinator.",
@@ -1185,7 +1953,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 19
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -1290,7 +2058,7 @@
       ]
     },
     {
-      "id": 18,
+      "id": 27,
       "type": "timeseries",
       "title": "L1 Keys per Server \u2014 Coordinator's View",
       "description": "lmcache_coordinator_key_directory_server_l1_keys: what each server reported to the coordinator's key directory. The coordinator identifies servers by UUID, so this joins through the servers' target_info to recover the friendly name. A sudden drop to 0 is a fence, not an eviction. Cross-check against the panel on the right: they come from independent sources and should agree.",
@@ -1302,7 +2070,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 47
       },
       "fieldConfig": {
         "defaults": {
@@ -1484,7 +2252,7 @@
       ]
     },
     {
-      "id": 19,
+      "id": 28,
       "type": "timeseries",
       "title": "L1 Keys per Server \u2014 Servers' Own View",
       "description": "Chunks written to L1 minus chunks evicted from it, straight from each server. Independent of the coordinator's event stream, so a disagreement with the panel on the left means a directory consumer has drifted from what the servers actually hold.",
@@ -1496,7 +2264,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 47
       },
       "fieldConfig": {
         "defaults": {
@@ -1678,7 +2446,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 29,
       "type": "timeseries",
       "title": "L1 Bytes per Server",
       "description": "Bytes resident in each server's L1 DRAM tier.",
@@ -1690,7 +2458,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 58
       },
       "fieldConfig": {
         "defaults": {
@@ -1872,7 +2640,7 @@
       ]
     },
     {
-      "id": 21,
+      "id": 30,
       "type": "timeseries",
       "title": "L1 Usage Ratio per Server",
       "description": "Used/total per server. The dashed line is the default --eviction-trigger-watermark (0.8); crossing it spills L1 to L2.",
@@ -1884,7 +2652,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 58
       },
       "fieldConfig": {
         "defaults": {
@@ -2083,7 +2851,7 @@
       ]
     },
     {
-      "id": 22,
+      "id": 31,
       "type": "timeseries",
       "title": "L2 Bytes per Server and Adapter",
       "description": "Bytes in each attached L2 adapter. Like the L2 placement count, this reflects only the current process lifetime \u2014 blobs left on disk by an earlier run are not discovered at startup and read as 0.",
@@ -2095,7 +2863,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -2277,7 +3045,7 @@
       ]
     },
     {
-      "id": 23,
+      "id": 32,
       "type": "timeseries",
       "title": "L1 Chunk Writes/Second",
       "description": "Rate of chunks admitted into L1.",
@@ -2289,7 +3057,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 80
       },
       "fieldConfig": {
         "defaults": {
@@ -2471,7 +3239,7 @@
       ]
     },
     {
-      "id": 24,
+      "id": 33,
       "type": "timeseries",
       "title": "L1 Evictions/Second",
       "description": "Rate of chunks evicted from L1 \u2014 the spill to L2.",
@@ -2483,7 +3251,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -2665,7 +3433,7 @@
       ]
     },
     {
-      "id": 25,
+      "id": 34,
       "type": "timeseries",
       "title": "Lookup Hit Tokens/Second by Tier",
       "description": "Which tier served the hits, fleet-wide. Tokens, not bytes and not requests, so the numbers are larger than the request rate by the tokens per request: NUM_TOKENS=512 at 3.8 lookups/s reads as ~1950/s. The axis unit is Grafana's generic counts-per-second, so it renders as c/s. Bytes would be larger still \u2014 a chunk here is about 1 MiB, so the same rate in bytes would be ~7.6 MiB/s.",
@@ -2677,7 +3445,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 80
       },
       "fieldConfig": {
         "defaults": {
@@ -2778,7 +3546,7 @@
       ]
     },
     {
-      "id": 26,
+      "id": 35,
       "type": "timeseries",
       "title": "Chunks Retrieved by Clients/Second",
       "description": "Chunks handed back to a client by a retrieve, whichever tier they came from: the read side of the fleet. The stimulators only store, so this stays at zero until `make restore` runs.",
@@ -2790,7 +3558,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 74
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -2972,7 +3740,7 @@
       ]
     },
     {
-      "id": 27,
+      "id": 36,
       "type": "timeseries",
       "title": "L2 to L1 Loads/Second",
       "description": "Chunks loaded from L2 back into L1 because a lookup asked for something L1 no longer held. The share of the panel on the left that had to come from L2. Each load takes L1 space, so it also shows up as L1 evictions.",
@@ -2984,7 +3752,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 74
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -3166,7 +3934,7 @@
       ]
     },
     {
-      "id": 28,
+      "id": 37,
       "type": "row",
       "title": "Key Directory Inventory (Directory Exporter)",
       "collapsed": false,
@@ -3174,12 +3942,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 85
+        "y": 102
       },
       "panels": []
     },
     {
-      "id": 29,
+      "id": 38,
       "type": "timeseries",
       "title": "L2 Placements per Server",
       "description": "KV blocks each server holds in L2, counted from the coordinator's key directory. The coordinator's own metrics only give this fleet-wide; the exporter derives the per-server split by listing the directory.",
@@ -3191,7 +3959,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 86
+        "y": 103
       },
       "fieldConfig": {
         "defaults": {
@@ -3373,7 +4141,7 @@
       ]
     },
     {
-      "id": 30,
+      "id": 39,
       "type": "timeseries",
       "title": "L2 Logical Bytes per Server",
       "description": "Bytes the directory attributes to each server's L2. Logical: under the dedup adapter the disk holds far less.",
@@ -3385,7 +4153,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 86
+        "y": 103
       },
       "fieldConfig": {
         "defaults": {
@@ -3567,7 +4335,7 @@
       ]
     },
     {
-      "id": 31,
+      "id": 40,
       "type": "timeseries",
       "title": "L2 Blocks by Age",
       "description": "How long each L2 block has existed, in the exporter's named age bands. Age is time since the exporter first saw the block; it checkpoints these so a restart no longer resets them. Bands are the default seven, as both the colours and the ordering need to know them ahead of time \u2014 if you override AGE_BOUNDS, read the heatmap below instead, which follows any bounds.",
@@ -3579,7 +4347,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 97
+        "y": 114
       },
       "fieldConfig": {
         "defaults": {
@@ -3804,7 +4572,7 @@
       ]
     },
     {
-      "id": 32,
+      "id": 41,
       "type": "timeseries",
       "title": "Block Age Quantiles",
       "description": "Computed at query time from the age histogram, so it needs no fixed bands. Quantiles are interpolated within a bucket: with coarse bounds the value is approximate, and it can never exceed the largest bound while blocks sit in the +Inf band.",
@@ -3816,7 +4584,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 97
+        "y": 114
       },
       "fieldConfig": {
         "defaults": {
@@ -3941,7 +4709,7 @@
       ]
     },
     {
-      "id": 33,
+      "id": 42,
       "type": "heatmap",
       "title": "L2 Block Age Distribution over Time",
       "description": "Each column is one moment; colour is how many L2 blocks fall in that age band. A diagonal means a cohort ageing together; a bright bottom row means fresh blocks arriving.",
@@ -3953,7 +4721,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 108
+        "y": 125
       },
       "options": {
         "calculate": false,
@@ -4004,7 +4772,7 @@
       ]
     },
     {
-      "id": 34,
+      "id": 43,
       "type": "timeseries",
       "title": "L1 Blocks by Age",
       "description": "How long blocks currently in L1 have been there. With a small L1 under constant eviction this stays young; old L1 blocks mean the tier has stopped turning over.",
@@ -4016,7 +4784,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 108
+        "y": 125
       },
       "fieldConfig": {
         "defaults": {
@@ -4241,7 +5009,7 @@
       ]
     },
     {
-      "id": 35,
+      "id": 44,
       "type": "timeseries",
       "title": "Oldest L2 Block per Server",
       "description": "Age of the longest-lived block in each server's L2. A steadily climbing line means nothing is being evicted from L2.",
@@ -4253,7 +5021,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 119
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -4435,7 +5203,7 @@
       ]
     },
     {
-      "id": 36,
+      "id": 45,
       "type": "timeseries",
       "title": "Keys by Number of Servers Holding Them",
       "description": "Replication across the registered fleet. Keys held by one server are unique to it; keys held by several come from overlapping stimulator windows. Copies left by a departed instance are not counted, so a restarted server is not a replica of its own previous run.",
@@ -4447,7 +5215,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 119
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -4576,7 +5344,7 @@
       ]
     },
     {
-      "id": 37,
+      "id": 46,
       "type": "timeseries",
       "title": "Block Churn per Minute",
       "description": "Blocks entering and leaving each tier, as seen between directory polls. A block that appears and disappears between two polls is not counted. A server restart shows as L1 removed, because the coordinator fences that server's L1; it does not show as L2 removed, because the L2 blocks are still listed, so L2 removed means evicted or deleted.",
@@ -4588,7 +5356,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 130
+        "y": 147
       },
       "fieldConfig": {
         "defaults": {
@@ -4737,7 +5505,7 @@
       ]
     },
     {
-      "id": 38,
+      "id": 47,
       "type": "timeseries",
       "title": "Keys by Access Count",
       "description": "How often the coordinator reports each key as accessed.",
@@ -4749,7 +5517,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 130
+        "y": 147
       },
       "fieldConfig": {
         "defaults": {
@@ -4926,7 +5694,7 @@
       ]
     },
     {
-      "id": 39,
+      "id": 48,
       "type": "timeseries",
       "title": "L2 Placements Left by Departed Instances",
       "description": "L2 blocks the directory still lists for instances that are no longer registered. A server takes a new instance id every time it starts, and the coordinator keeps a departed instance's L2 placements on purpose, so each restart strands that run's blocks here. Shown under the name the instance had; 'unknown' is one the exporter never saw registered. Empty on a fleet that has not been restarted.",
@@ -4938,7 +5706,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 141
+        "y": 158
       },
       "fieldConfig": {
         "defaults": {
@@ -5120,7 +5888,7 @@
       ]
     },
     {
-      "id": 40,
+      "id": 49,
       "type": "table",
       "title": "Most Reused Blocks",
       "description": "The blocks the coordinator has served most often, named individually rather than bucketed: the first 16 hex of the chunk hash, every server and tier holding a copy, how many times it has been served, and the age of its oldest copy. Everything else in this row is an aggregate, because a series per key would be a cardinality disaster; this is bounded by TOP_REUSED (default 10). Ties break by hash so the order does not shuffle between polls. The two metrics carry identical labels, which is what lets them merge into one row.",
@@ -5132,7 +5900,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 169
       },
       "fieldConfig": {
         "defaults": {
@@ -5291,7 +6059,7 @@
       ]
     },
     {
-      "id": 41,
+      "id": 50,
       "type": "timeseries",
       "title": "L2 Logical Bytes Left by Departed Instances",
       "description": "Bytes behind the panel on the left. No running server counts these towards its L2 usage, so nothing evicts them: they stay until the L2 directory is cleared.",
@@ -5303,7 +6071,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 141
+        "y": 158
       },
       "fieldConfig": {
         "defaults": {

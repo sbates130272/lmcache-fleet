@@ -80,3 +80,9 @@ jobs:
         run: |
           pip install --quiet numpy
           python3 scripts/check_tracelib.py
+
+      # An aggregator's output is only stackable if merging does not depend on
+      # how the coordinators are grouped beneath it. If it did, a deeper tree
+      # would report different totals and nothing would fail.
+      - name: Fleet summaries merge the same in any tree
+        run: python3 scripts/check_fleet_summary.py

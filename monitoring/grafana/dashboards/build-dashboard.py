@@ -231,10 +231,10 @@ def counts(title, parts, x, y, w=3, h=4, desc=""):
 # here simply does not show, rather than appearing under its raw name.
 RUN_ROWS = [("fleet", "Fleet"), ("l1", "L1"), ("l2_local", "L2, Local to a Server"),
             ("l2_shared", "L2, Shared between Servers"), ("l2_sim", "L2 Simulation"),
-            ("workload", "Workload"), ("image", "Image")]
+            ("aggregation", "Aggregation"), ("workload", "Workload"), ("image", "Image")]
 
 
-def run_table(x, y, w=24, h=9):
+def run_table(x, y, w=24, h=10):
     """The run's settings as two columns: what, and how it is set.
 
     One instant sample in table form is a single row whose columns are the
@@ -374,6 +374,71 @@ panels = [
                 "this. Amber from ten minutes, so a DIRECTORY_POLL of five is "
                 "still green between polls. It pages the directory a thousand keys at a time, so on a "
                 "large one a poll can outlast its timeout and never finish."),
+    # The whole fleet, from the root aggregator: the one place a block held
+    # under several coordinators is counted once. Empty on a fleet with a
+    # single coordinator, which has no aggregator and needs none.
+    row("Whole Fleet (Summed across Coordinators by the Fleet Aggregator)", -18),
+    stat("Distinct Blocks", 'lmcache_fleet_blocks_distinct{root="true",place="all"}',
+         "short", 0, -17, w=4,
+         desc="Blocks held anywhere in the fleet, each counted once however many "
+              "coordinators track a copy. Estimated from sketches the aggregators "
+              "merge, so within about 1% rather than exact."),
+    stat("Blocks, Added Up", 'lmcache_fleet_blocks_sum{root="true"}',
+         "short", 4, -17, w=4,
+         desc="What you get by adding the coordinators' own key counts: a block "
+              "under several of them counts once for each."),
+    stat("Copies beyond the First", 'lmcache_fleet_blocks_duplicated{root="true"}',
+         "short", 8, -17, w=4,
+         desc="The difference between the two tiles to the left: copies of blocks "
+              "that some other coordinator's servers already hold. Content the "
+              "fleet stores more than once because no one coordinator can see it "
+              "is shared."),
+    stat("Distinct Blocks in Shared L2",
+         'lmcache_fleet_blocks_distinct{root="true",place="l2_shared"}', "short", 12, -17, w=4,
+         desc="Distinct blocks in the L2 tier servers share. Every coordinator "
+              "tracks the shared tier separately, so this is the only count of "
+              "what it really holds."),
+    counts("Coordinators Summarized",
+           [('lmcache_fleet_coordinators{root="true"} - lmcache_fleet_coordinators_stale{root="true"}',
+             "Fresh", steps((CRITICAL, None), (GOOD, 1))),
+            ('lmcache_fleet_coordinators_stale{root="true"}', "Stale",
+             steps((GOOD, None), (CRITICAL, 1)))],
+           16, -17, w=4,
+           desc="Coordinators whose directory is in the fleet totals, and how many "
+                "of those have stopped being refreshed somewhere on the way up. A "
+                "stale one is still counted, from its last summary."),
+    health("Summary Age", 'lmcache_fleet_summary_age_seconds{root="true"}', "s", 20, -17,
+           steps((GOOD, None), (WARNING, 600), (CRITICAL, 1800)), w=4,
+           desc="Age of the oldest coordinator summary in the fleet totals. Each "
+              "level adds its own polling interval to the exporter's."),
+    ts("Distinct Blocks, and Where They Are Held",
+       [('lmcache_fleet_blocks_distinct{root="true",place="all"}', "Anywhere"),
+        ('lmcache_fleet_blocks_distinct{root="true",place="l1"}', T1),
+        ('lmcache_fleet_blocks_distinct{root="true",place="l2"}', "L2 (Local to a Server)"),
+        ('lmcache_fleet_blocks_distinct{root="true",place="l2_shared"}', "L2 (Shared)"),
+        ('lmcache_fleet_blocks_sum{root="true"}', "Coordinators Added Up")],
+       "short", 0, -16,
+       overrides=[color("Anywhere", "#9085e9"), color(T1, L1),
+                  color("L2 (Local to a Server)", L2), color("L2 (Shared)", "#199e70"),
+                  color("Coordinators Added Up", "#c98500")],
+       desc="Distinct blocks across the fleet over time, overall and by where a "
+            "copy is held; a block in L1 and L2 appears under both. The gap "
+            "between Anywhere and Coordinators Added Up is content held under "
+            "more than one coordinator."),
+    table("Most Reused Blocks, Fleet-Wide",
+          [('sum by (rank, hash, pods) (lmcache_fleet_top_reused_accesses{root="true"})', "")],
+          12, -16, w=12, h=11,
+          sort_by="Rank",
+          order=["rank", "hash", "pods", "Value"],
+          rename={"rank": "Rank", "hash": "Hash", "pods": "Coordinators", "Value": "Accesses"},
+          widths={"Rank": 70, "Coordinators": 130, "Accesses": 130},
+          desc="The blocks served most often across the whole fleet: accesses "
+               "summed over every coordinator that tracks a copy, and how many "
+               "do. Each coordinator contributes its own hundred most reused "
+               "and the lists are merged on the way up, so a block that is "
+               "nowhere in a coordinator's top hundred but adds up across many "
+               "is missed. The per-coordinator table further down cannot rank "
+               "across coordinators at all."),
     row("Fleet State (Coordinator and Servers)", -10),
     stat("Keys Tracked", "sum(lmcache_coordinator_key_directory_keys_tracked)", "short", 0, 0,
          desc="Unique keys the coordinator's directory holds at least one placement for. "

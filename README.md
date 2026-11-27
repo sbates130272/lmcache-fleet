@@ -427,6 +427,81 @@ pages cost the coordinator fewer passes over it. `DIRECTORY_POLL` can then be
 minutes: Prometheus reads the exporter's last finished poll at most a minute
 apart regardless, so the panels do not go stale between polls.
 
+## Above the Coordinators: Fleet Aggregators
+
+Coordinators that each track their own servers leave nobody who can say how
+many distinct blocks the fleet holds, which are reused most, or which
+coordinator to ask about one. Collecting their keys in one place is not the
+answer: that is the directory the fleet outgrew, one level up.
+
+Instead each directory exporter publishes a **summary** of its coordinator's
+directory at `/summary`, built so that the summary of several directories is
+computed from their summaries alone
+([fleet_summary.py](monitoring/exporter/fleet_summary.py)): counts, which add;
+HyperLogLog sketches of block hashes, which merge by taking the larger of each
+register, so a block under ten coordinators counts once; the hundred most
+accessed blocks, whose counts add; and a Bloom filter of block hashes, which
+merges by OR. A **fleet aggregator**
+([fleet_aggregator.py](monitoring/exporter/fleet_aggregator.py)) reads its
+children's summaries, merges them, and serves the result in the same form.
+
+That last part is what makes it a tree rather than a tier. An aggregator's
+children can be aggregators, each level holds a bounded summary per child
+however many servers lie beneath it, and merging is associative, so the root
+reports the same numbers however the coordinators are grouped.
+[check_fleet_summary.py](scripts/check_fleet_summary.py) asserts exactly that —
+eight directories merged flat, as a binary tree, unevenly and as a chain eight
+deep, each level over the wire, all agree — and runs in CI.
+
+```bash
+L2_DEDUP=1 NUM_COORD=4 make up NUM=8                # one aggregator over four coordinators
+L2_DEDUP=1 NUM_COORD=4 AGG_FANOUT=2 make up NUM=8   # two over pairs, and a root over those
+curl -s "localhost:9106/locate?hash=<chunk hash>"   # which coordinators may hold a block
+```
+
+Aggregators run whenever `NUM_COORD` is more than one. `AGG_FANOUT` is children
+per aggregator: 0 puts one over everything, and anything from 2 up builds
+levels until one root remains, always the service `aggregator`, published on
+`AGG_PORT`. The dashboard's "Whole Fleet" row reads the root.
+
+Measured on 8 servers under 4 coordinators with two levels of aggregator,
+against every key read directly from the four coordinators: 26,070 blocks
+added up, exact; 24,166 distinct, reported as 24,209 (0.18% over); the five
+most reused identical, each correctly found under all four coordinators; and
+`/locate` naming exactly the right coordinators for a block under all four,
+under one, and under none, asking only the children that could hold it.
+
+What it does not do:
+
+- **Distinct counts are estimates**, about 0.4% off. "Copies beyond the first"
+  is the difference of two large numbers and carries that error whole: 1,861
+  reported against 1,904.
+- **The most-reused list can miss a block** that is outside every coordinator's
+  own hundred but large in total.
+- **`/locate` is a hint.** A filter can name a coordinator that does not hold
+  the block (about 1% of the time at 870,000 blocks under the root, more past
+  that; `SUMMARY_BLOOM_BITS` sizes it, the same at every level), never the
+  reverse. Check with the coordinator, as with any directory answer.
+- **It is as fresh as its slowest path**: an exporter's poll plus one
+  aggregator interval per level. A child that stops answering keeps its last
+  summary and is counted as stale.
+
+**Kafka instead?** LMCache can carry cache events over Kafka rather than HTTP
+posts, and it is the better transport, not an alternative to this. Tried on
+four servers with the coordinator frozen for 30 seconds mid-run: over HTTP it
+lost 1,436 batches and ended with 2,212 of 2,400 L2 placements and every
+server's view incomplete; over Kafka it ended with all 2,400 and no gaps,
+because a late coordinator reads what it missed instead of the servers
+dropping it. Two coordinators in one consumer group do split the stream
+between them. But the split follows Kafka's partitioning, not which
+coordinator a server registered with, so a coordinator ends up holding
+placements for servers it has never heard of; and each coordinator still holds
+only its share, with nothing above it. Kafka fixes loss. It does not add the
+view across coordinators, which is what the aggregators are for. Nothing here
+generates a Kafka fleet yet; note that LMCache needs `confluent-kafka<2.16`,
+and with 2.16.2 the coordinator's `/metrics` handler blocks its event loop for
+good on the first scrape.
+
 ## Monitoring the Fleet
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the

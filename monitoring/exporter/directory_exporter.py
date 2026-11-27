@@ -20,6 +20,12 @@ here cover registered instances only; what departed ones left behind is
 published separately as lmcache_directory_departed_*, under the server name the
 instance had while it was registered, so a restart does not add a series.
 
+Summary. Each poll also builds a summary of the directory that can be added
+to other directories' summaries (see fleet_summary.py), served at /summary for
+a fleet aggregator to collect: this exporter already reads every key, so the
+summary costs the coordinator nothing more. /locate?hash=<chunk hash> answers
+from the same summary whether this directory may hold a block.
+
 Stdlib only, so it runs in any Python image.
 """
 import json
@@ -29,6 +35,8 @@ import time
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import fleet_summary
 
 COORD = os.environ.get("COORDINATOR_URL", "http://coordinator:9300").rstrip("/")
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "15"))
@@ -48,6 +56,13 @@ TOP_REUSED = int(os.environ.get("TOP_REUSED", "10"))
 # disable. Times are wall-clock, so they survive across processes.
 STATE_PATH = os.environ.get("STATE_PATH", "/state/first_seen.json")
 STATE_SAVE_INTERVAL = float(os.environ.get("STATE_SAVE_INTERVAL", "60"))
+# What this directory is called in the fleet summary, and the geometry of the
+# filter it publishes there. The filter must be the same size at every level of
+# an aggregator tree, since filters merge by OR; the default holds about 870,000
+# blocks at a 1% false-positive rate.
+SUMMARY_NAME = os.environ.get("SUMMARY_NAME") or urllib.parse.urlparse(COORD).hostname or COORD
+SUMMARY_BLOOM_BITS = int(os.environ.get("SUMMARY_BLOOM_BITS", str(fleet_summary.BLOOM_BITS)))
+SUMMARY_TOP = int(os.environ.get("SUMMARY_TOP", str(fleet_summary.TOP_N)))
 _SEP = "\x1f"
 # Server label for a departed instance this exporter never saw registered, so
 # it has no name for it. One fixed value rather than the raw instance id: ids
@@ -162,6 +177,8 @@ class State:
         self.loaded = 0
         self.saved_at = 0.0
         self.text = "# no successful poll yet\n"
+        self.summary = None    # the last poll's fleet summary, decoded
+        self.summary_wire = b""
 
     def load(self):
         """Restore first-seen times from the checkpoint, if there is one."""
@@ -229,6 +246,7 @@ def poll(state):
     # last page has been read, so every key's hash, holders and pids are held
     # until then. Dropped as soon as the top N is picked.
     reuse = []
+    summary = fleet_summary.LeafBuilder(SUMMARY_BLOOM_BITS, SUMMARY_TOP)
     offset = 0
     while True:
         page = get(f"/directory/keys?limit={PAGE_SIZE}&offset={offset}")
@@ -241,6 +259,8 @@ def poll(state):
                 continue
             keys += 1
             tokens += k.get("num_tokens", 0)
+            summary.add(ident["chunk_hash_hex"], k.get("access_count", 0),
+                        [(p["tier"], backend_of(p), p.get("size_bytes", 0)) for p in placements])
             a = bucket(k.get("access_count", 0), ACCESS_BUCKETS)
             access[a] = access.get(a, 0) + 1
             # Replication and tier sets describe the registered fleet. A copy
@@ -278,7 +298,10 @@ def poll(state):
             break
 
     now = time.time()
+    leaf = summary.finish(SUMMARY_NAME, COORD, len(live), now)
+    leaf_wire = fleet_summary.encode(leaf)
     with state.lock:
+        state.summary, state.summary_wire = leaf, leaf_wire
         # Forget a name once its instance is neither registered nor holding
         # anything, or the map would grow by one entry per restart for good.
         state.names = {i: n for i, n in names.items() if i in live or i in departed_ids}
@@ -453,14 +476,29 @@ def main():
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if urllib.parse.urlparse(self.path).path != "/metrics":
-                self.send_response(404)
+            url = urllib.parse.urlparse(self.path)
+            content_type = "application/json"
+            with state.lock:
+                summary, summary_wire, text = state.summary, state.summary_wire, state.text
+            if url.path == "/metrics":
+                body, content_type = text.encode(), "text/plain; version=0.0.4; charset=utf-8"
+            elif url.path == "/summary" and summary is not None:
+                body = summary_wire
+            elif url.path == "/locate" and summary is not None:
+                # A leaf answers for itself: a hit names the coordinator to ask,
+                # and like every directory answer it is a hint to check there.
+                wanted = urllib.parse.parse_qs(url.query).get("hash", [""])[0]
+                held = bool(wanted) and fleet_summary.block_hash(wanted) in summary["bloom"]
+                body = json.dumps({"hash": wanted, "candidates": [
+                    {"source": SUMMARY_NAME, "coordinator": COORD}] if held else []}).encode()
+            else:
+                # 503 before the first poll, so a collector retries instead of
+                # reading "nothing here" as an empty directory.
+                self.send_response(503 if url.path in ("/summary", "/locate") else 404)
                 self.end_headers()
                 return
-            with state.lock:
-                body = state.text.encode()
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

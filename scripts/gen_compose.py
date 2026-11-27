@@ -104,6 +104,11 @@ ENV_DOCS = {
     "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
     "DIRECTORY_POLL": ("Monitoring", "seconds between directory exporter polls"),
     "DIRECTORY_PAGE_SIZE": ("Monitoring", "keys per page the exporter reads; up to 10000"),
+    "AGGREGATE": ("Monitoring", "1 = run fleet aggregators above the coordinators; on when NUM_COORD > 1"),
+    "AGG_FANOUT": ("Monitoring", "children per aggregator; 0 = one aggregator over all, N >= 2 = a tree"),
+    "AGG_POLL": ("Monitoring", "seconds between an aggregator's reads of its children"),
+    "AGG_PORT": ("Monitoring", "host port the root aggregator is published on"),
+    "SUMMARY_BLOOM_BITS": ("Monitoring", "bits in the fleet summary's block filter; same at every level"),
 
     "RUN_UID": ("Runtime", "uid every container runs as"),
     "RUN_GID": ("Runtime", "gid every container runs as"),
@@ -245,6 +250,52 @@ def coord_name(k):
 def coord_of(i):
     """Which coordinator (1-based) server i reports to."""
     return (i - 1) % NUM_COORD + 1
+
+
+def exporter_name(k):
+    return "directory-exporter" if k == 1 else f"directory-exporter-{k}"
+
+
+# Fleet aggregators: what stands above coordinators that know only their own
+# servers. Each directory exporter publishes a summary of its coordinator's
+# directory that can be merged with others' (monitoring/exporter/
+# fleet_summary.py), and an aggregator merges its children's and publishes the
+# result in the same form -- so an aggregator's children can be aggregators.
+#
+#   AGG_FANOUT  children per aggregator. 0 puts one aggregator over every
+#               coordinator. N >= 2 builds a tree: aggregators over groups of N
+#               exporters, then over groups of N of those, up to a single root.
+#               The numbers at the root are the same either way; the tree is
+#               there to show, and to test, that nothing changes with depth.
+#
+# The root is always the service `aggregator`; the rest are named by level.
+AGGREGATE = os.environ.get("AGGREGATE", "1" if NUM_COORD > 1 else "0") \
+    not in ("0", "", "false", "no")
+AGG_FANOUT = int(os.environ.get("AGG_FANOUT", "0"))
+AGG_POLL = os.environ.get("AGG_POLL", "30")
+# The root answers /summary and /locate?hash=..., so it is published on the
+# host's loopback like the coordinators are.
+AGG_PORT = int(os.environ.get("AGG_PORT", "9106"))
+if AGG_FANOUT < 0 or AGG_FANOUT == 1:
+    sys.exit(f"AGG_FANOUT={AGG_FANOUT} must be 0 (one aggregator over everything) or at "
+             "least 2: a fan-out of 1 never narrows to a root")
+AGGREGATORS = []          # (name, level, [child URL, ...], is the root)
+if AGGREGATE:
+    _below = [f"http://{exporter_name(k)}:9105" for k in range(1, NUM_COORD + 1)]
+    _level = 1
+    while True:
+        _fan = AGG_FANOUT or len(_below)
+        _groups = [_below[i:i + _fan] for i in range(0, len(_below), _fan)]
+        _root = len(_groups) == 1
+        _names = ["aggregator" if _root else f"aggregator-{_level}-{n}"
+                  for n in range(1, len(_groups) + 1)]
+        AGGREGATORS += [(name, _level, group, _root)
+                        for name, group in zip(_names, _groups, strict=True)]
+        if _root:
+            break
+        _below = [f"http://{name}:9106" for name in _names]
+        _level += 1
+AGG_LEVELS = max((level for _n, level, _c, _r in AGGREGATORS), default=0)
 
 # Sizes are GiB, and named so. LMCache's own flags say "gb" (--l1-size-gb,
 # max_capacity_gb) but multiply by 1024**3, so the old *_GB names here promised
@@ -747,6 +798,12 @@ RUN_INFO = {
     "l2_sim": ((f"dedup on ({L2_LINK_MODE}s): L2 contents are fake" if L2_DEDUP
                 else "latency only: L2 contents are real") if L2_PLUGIN
                else "off: stock adapter, real bytes"),
+    "aggregation": (
+        "none: nothing above the coordinator" + ("s" if NUM_COORD > 1 else "")
+        if not AGGREGATORS else
+        f"{len(AGGREGATORS)} aggregator{'s' if len(AGGREGATORS) != 1 else ''} in "
+        f"{AGG_LEVELS} level{'s' if AGG_LEVELS != 1 else ''} above the coordinators"
+        + (f", {AGG_FANOUT} children each" if AGG_FANOUT else "")),
     "workload": _workload,
     "image": IMAGE,
 }
@@ -878,9 +935,11 @@ coordinators = "\n".join(f"""  {coord_name(k)}:
 {COORD_FLAGS}""" for k in range(1, NUM_COORD + 1))
 
 
-def exporter_name(k):
-    return "directory-exporter" if k == 1 else f"directory-exporter-{k}"
-
+# The filter in a fleet summary is one size at every level, because filters
+# merge by OR. The default (1 MiB of bits) is about 1% wrong at 870,000 blocks
+# beneath the root; a bigger fleet wants a bigger one.
+SUMMARY_BLOOM_BITS = os.environ.get("SUMMARY_BLOOM_BITS", "")
+SUMMARY_ENV = f'      SUMMARY_BLOOM_BITS: "{int(SUMMARY_BLOOM_BITS)}"\n' if SUMMARY_BLOOM_BITS else ""
 
 # One exporter per coordinator: it polls a single directory, and its ages and
 # churn counters are kept per placement, so each needs its own state too.
@@ -890,12 +949,27 @@ exporters = "\n".join(f"""  {exporter_name(k)}:
 {RUN_AS}      COORDINATOR_URL: http://{coord_name(k)}:{COORD_NET_PORT}
       POLL_INTERVAL: "{DIRECTORY_POLL}"
       PAGE_SIZE: "{DIRECTORY_PAGE_SIZE}"
-    networks: [fleet]
+      SUMMARY_NAME: "{coord_name(k)}"
+{SUMMARY_ENV}    networks: [fleet]
     volumes:
       - ../monitoring/exporter:/exporter:ro
       - ../data/{"exporter" if k == 1 else f"exporter-{k}"}:/state            # first-seen times, so ages survive a restart
     command: ["python", "-u", "/exporter/directory_exporter.py"]
 """ for k in range(1, NUM_COORD + 1))
+
+_AGG_ROOT_PORTS = f'    ports:\n      - "127.0.0.1:{AGG_PORT}:9106"\n'
+aggregators = "\n".join(f"""  {name}:
+    image: {EXPORTER_IMAGE}
+    hostname: {name}
+{RUN_AS}      AGGREGATOR_NAME: "{name}"
+      AGGREGATOR_LEVEL: "{level}"
+      CHILDREN: "{','.join(children)}"
+      POLL_INTERVAL: "{AGG_POLL}"
+    networks: [fleet]
+{_AGG_ROOT_PORTS if root else ""}    volumes:
+      - ../monitoring/exporter:/exporter:ro
+    command: ["python", "-u", "/exporter/fleet_aggregator.py"]
+""" for name, level, children, root in AGGREGATORS)
 
 compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
 # {NUM_SERVERS} MP servers (L1 DRAM + L2 fs) + {NUM_COORD} coordinator(s) + {NUM_SERVERS} stimulators.
@@ -924,7 +998,7 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time={PROM_RETENTION}
 
-{exporters}
+{exporters}{chr(10) + aggregators if aggregators else ""}
   grafana:
     image: {GRAFANA_IMAGE}
     hostname: grafana
@@ -981,6 +1055,21 @@ exporter_targets = "\n".join(
           coordinator: "{coord_name(k)}\""""
     for k in range(1, NUM_COORD + 1))
 
+# `root` marks the one aggregator whose numbers are the whole fleet's, which is
+# what the dashboard reads; the rest are scraped so each level can be checked
+# against the one above.
+aggregator_job = ("""
+  - job_name: "lmcache-fleet"
+    static_configs:
+""" + "\n".join(
+    f"""      - targets: ["{name}:9106"]
+        labels:
+          component: "fleet-aggregator"
+          aggregator: "{name}"
+          level: "{level}"
+          root: "{'true' if root else 'false'}\""""
+    for name, level, _children, root in AGGREGATORS) + "\n") if AGGREGATORS else ""
+
 prometheus_yml = f"""# Generated by gen_compose.py — do not edit; regenerate with `make gen`.
 global:
   scrape_interval: {SCRAPE_INTERVAL}
@@ -999,7 +1088,7 @@ scrape_configs:
     scrape_interval: {DIRECTORY_SCRAPE:g}s
     static_configs:
 {exporter_targets}
-
+{aggregator_job}
   - job_name: "lmcache-servers"
     metrics_path: /metrics
     static_configs:
@@ -1048,7 +1137,12 @@ print(f"wrote {out} ({NUM_SERVERS} servers, "
 print("  compose no longer sits at the repo root: use make, or "
       "export COMPOSE_FILE=docker/docker-compose.yml")
 print(f"wrote {os.path.join(mon, 'prometheus.yml')} "
-      f"({NUM_SERVERS + 2 * NUM_COORD} scrape targets)")
+      f"({NUM_SERVERS + 2 * NUM_COORD + len(AGGREGATORS)} scrape targets)")
+if AGGREGATORS:
+    print(f"aggregators: {len(AGGREGATORS)} in {AGG_LEVELS} level(s): "
+          + "; ".join(f"{name} (L{level}) <- "
+                      + ",".join(c.split("//")[1].split(":")[0] for c in children)
+                      for name, level, children, _root in AGGREGATORS))
 if NUM_COORD > 1:
     _pods = {}
     for _i in range(1, NUM_SERVERS + 1):
