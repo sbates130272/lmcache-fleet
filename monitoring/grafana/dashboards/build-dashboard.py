@@ -241,8 +241,14 @@ panels = [
             "target_info to recover the friendly name. A sudden drop to 0 is a "
             "fence, not an eviction. Cross-check against the panel on the right: "
             "they come from independent sources and should agree."),
+    # A server exports the eviction counter only once it has evicted, and a
+    # subtraction with one side missing is empty: the panel read "No data" until
+    # every L1 had filled, which on a large L1 is most of a run. `or ... * 0`
+    # stands in a zero for a server that has not evicted yet.
     ts("L1 Keys per Server — Servers' Own View",
-       [('lmcache_mp_l1_write_chunks_total{server=~"$server"} - lmcache_mp_l1_evicted_chunks_total{server=~"$server"}',
+       [('sum by (server) (lmcache_mp_l1_write_chunks_total{server=~"$server"})'
+         ' - (sum by (server) (lmcache_mp_l1_evicted_chunks_total{server=~"$server"})'
+         ' or sum by (server) (lmcache_mp_l1_write_chunks_total{server=~"$server"}) * 0)',
          "{{server}}")],
        "short", 12, 12, overrides=SERVER_OVERRIDES,
        desc="Chunks written to L1 minus chunks evicted from it, straight from "
