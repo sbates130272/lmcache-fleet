@@ -217,6 +217,8 @@ class Schedule:
         return len(self.due)
 
     def __getitem__(self, n):
+        if isinstance(n, slice):
+            return Schedule(self.due[n], self.session[n], self.request[n])
         return float(self.due[n]), int(self.session[n]), int(self.request[n])
 
     def __iter__(self):
