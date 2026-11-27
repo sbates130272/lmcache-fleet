@@ -35,13 +35,15 @@ import sys
 # "undocumented", rather than quietly going unmentioned.
 ENV_DOCS = {
     "NUM_SERVERS": ("Fleet", "number of MP servers"),
-    "NUM_COORD": ("Fleet", "coordinators; must be 1 (v0.5.8 has no clustering)"),
+    "NUM_COORD": ("Fleet", "coordinators the servers are dealt across; each tracks only its own"),
+    "COORD_EVENT_FLUSH_INTERVAL": ("Fleet", "seconds between a server's cache-event posts; unset = LMCache's 1"),
+    "KV_EVENT_LOG_SIZE": ("Fleet", "records each server keeps for KV-event subscribers; 0 = channel off"),
     "LMCACHE_IMAGE": ("Fleet", "image for coordinator, servers and stimulators"),
     "CHUNK_SIZE": ("Fleet", "chunk size; must match across servers and coordinator"),
     "L1_GIB": ("Fleet", "per-server L1 DRAM tier size in GiB"),
     "EVICT_WATERMARK": ("Fleet", "L1 fraction that triggers the L2 spill"),
     "SHM_SIZE": ("Fleet", "/dev/shm per server and stimulator"),
-    "COORD_PORT": ("Fleet", "host port the coordinator is published on"),
+    "COORD_PORT": ("Fleet", "host port of the first coordinator; the rest follow it"),
     "HTTP_BASE": ("Fleet", "first host port for the servers' HTTP APIs"),
 
     "SEQ": ("Workload", "sequences each stimulator stores (its window width)"),
@@ -101,12 +103,12 @@ ENV_DOCS = {
     "QUIET_ACCESS_PATHS": ("Monitoring", "comma-separated path prefixes treated as polled"),
     "GRAFANA_PORT": ("Monitoring", "pin Grafana to exactly this host port"),
     "DIRECTORY_POLL": ("Monitoring", "seconds between directory exporter polls"),
+    "DIRECTORY_PAGE_SIZE": ("Monitoring", "keys per page the exporter reads; up to 10000"),
 
     "RUN_UID": ("Runtime", "uid every container runs as"),
     "RUN_GID": ("Runtime", "gid every container runs as"),
     "CGROUP_PARENT": ("Runtime", "systemd slice for every container, e.g. system.slice; unset = docker's default"),
     "COMPOSE_PROJECT_NAME": ("Runtime", "scopes the network and container names"),
-    "LMCACHE_VERSION": ("Runtime", "version named in the NUM_COORD error only"),
 
     # Read by the exporter itself, so they are set on that service rather than
     # passed to gen_compose.
@@ -218,15 +220,31 @@ if "--env-vars" in sys.argv:
 # ---------------- tunables (env-overridable) --------------------------------
 NUM_SERVERS = int(os.environ.get("NUM_SERVERS", sys.argv[1] if len(sys.argv) > 1 else "3"))
 
-# Fleet size is programmable; coordinator count is not. LMCache v0.5.8 has no
-# coordinator clustering: the key directory lives in one process, the server's
-# --coordinator-url takes a single URL, and the only persistence is a
-# single-writer --checkpoint-path. Named here so the topology is explicit and
-# so this becomes a real knob if upstream grows HA coordinators.
+# Coordinators. LMCache v0.5.8 has no coordinator clustering: a key directory
+# lives in one process, and a server's --coordinator-url takes a single URL. So
+# more than one coordinator here means pods, not a cluster: servers are dealt
+# across NUM_COORD coordinators in turn, each of which tracks its own servers
+# and knows nothing of the rest. That is what a single coordinator needs once a
+# fleet outgrows it. It decodes and applies every cache event on one event
+# loop; measured on 100 servers replaying agent traces it was offered about 960
+# batches a second, applied 81, and spent the rest of its core decoding posts
+# that had already timed out at the server. Past that point it does not slow
+# down, it stops being right. Dealing is the same modulo SHARE_GROUPS uses, so
+# NUM_COORD == SHARE_GROUPS gives each shared L2 directory its own coordinator.
 NUM_COORD = int(os.environ.get("NUM_COORD", "1"))
-if NUM_COORD != 1:
-    sys.exit(f"NUM_COORD={NUM_COORD}: LMCache {os.environ.get('LMCACHE_VERSION', 'v0.5.8')} "
-             "supports exactly one coordinator per fleet")
+if not 1 <= NUM_COORD <= NUM_SERVERS:
+    sys.exit(f"NUM_COORD={NUM_COORD} must be between 1 and NUM_SERVERS={NUM_SERVERS}")
+
+
+def coord_name(k):
+    """Service name of coordinator k. The first keeps the bare name everything
+    outside this file knows it by."""
+    return "coordinator" if k == 1 else f"coordinator-{k}"
+
+
+def coord_of(i):
+    """Which coordinator (1-based) server i reports to."""
+    return (i - 1) % NUM_COORD + 1
 
 # Sizes are GiB, and named so. LMCache's own flags say "gb" (--l1-size-gb,
 # max_capacity_gb) but multiply by 1024**3, so the old *_GB names here promised
@@ -254,6 +272,23 @@ COORD_NET_PORT = 9300
 HTTP_BASE    = int(os.environ.get("HTTP_BASE", "8181")) # host ports: 8181, 8182, ...
 EVICT_WATERMARK = os.environ.get("EVICT_WATERMARK", "0.8")
 SHM_SIZE = os.environ.get("SHM_SIZE", "512m")
+
+# Two things a server keeps in memory for the sake of whoever tracks its blocks,
+# both invisible at four servers and both decisive at a hundred.
+#
+# The KV-event channel: a log of store and eviction records plus a cache of the
+# tokens behind them, for engines that subscribe to it. Nothing in this fleet
+# does, and it still fills: up to 32768 records and 65536 token bindings, each
+# holding a chunk's token ids as Python ints, about 10 KB apiece. Measured at
+# roughly a quarter of a GiB an hour per server until full. Off by default
+# here; set a size to turn it back on.
+KV_EVENT_LOG_SIZE = int(os.environ.get("KV_EVENT_LOG_SIZE", "0"))
+# How often a server posts its cache events to its coordinator. Unset leaves
+# LMCache's own default of one second.
+COORD_EVENT_FLUSH_INTERVAL = os.environ.get("COORD_EVENT_FLUSH_INTERVAL", "")
+SERVER_EVENT_FLAGS = f"      --kv-event-log-size {KV_EVENT_LOG_SIZE}\n" + (
+    f"      --coordinator-event-flush-interval {float(COORD_EVENT_FLUSH_INTERVAL):g}\n"
+    if COORD_EVENT_FLUSH_INTERVAL else "")
 
 # Run every container as the invoking user so files written to the L2 bind
 # mounts are owned by us, not by whatever uid the image happens to default to.
@@ -503,15 +538,19 @@ QUIET_MOUNT = (f"      - ../docker/quiet:{_QUIET_MOUNT}:ro      # access-log fil
 PY_ENV = f"      PYTHONPATH: {':'.join(_PYTHONPATH)}\n" if _PYTHONPATH else ""
 # Both files live in the data tree, so `make clean` takes them with the rest
 # of the run's state rather than leaving a stale directory to be resumed from.
-COORD_STATE_MOUNT = ("      - ../data/coordinator:/state            "
-                     "# checkpointed key directory, pins and quotas\n"
-                     if COORD_CHECKPOINT else "")
+def _coord_volumes(k):
+    """The volumes block of coordinator k: the access-log filter, and its own
+    state directory when it checkpoints."""
+    state = (f"      - ../data/{coord_name(k)}:/state            "
+             "# checkpointed key directory, pins and quotas\n"
+             if COORD_CHECKPOINT else "")
+    return f"    volumes:\n{QUIET_MOUNT}{state}" if QUIET_MOUNT + state else ""
+
+
 COORD_FLAGS = (f"      --checkpoint-path /state/checkpoint.json\n"
                f"      --checkpoint-interval {COORD_CHECKPOINT_INTERVAL}\n"
                f"      --metadata-path /state/metadata.json\n"
                if COORD_CHECKPOINT else "")
-_coord_vols = QUIET_MOUNT + COORD_STATE_MOUNT
-COORD_VOLUMES = f"    volumes:\n{_coord_vols}" if _coord_vols else ""
 # The coordinator loads no plugins, so it gets the quiet path only rather than
 # a PYTHONPATH naming a plugins mount it does not have.
 COORD_ENV = f"      PYTHONPATH: {_QUIET_MOUNT}\n" if QUIET_MOUNT else ""
@@ -596,6 +635,20 @@ GRAFANA_PORT_SPEC = (f"{_grafana_port}:3000" if _grafana_port
 # per-server inventory, placement age, replication and churn.
 EXPORTER_IMAGE = os.environ.get("EXPORTER_IMAGE", "python:3-alpine")
 DIRECTORY_POLL = os.environ.get("DIRECTORY_POLL", "15")
+# Keys the exporter asks the coordinator for at a time. Every page costs the
+# coordinator a pass over its whole directory before the keys themselves, and
+# it answers on the same event loop that applies cache events, so on a large
+# directory fewer, larger pages are much cheaper for both: 82,000 keys took
+# 11 s in pages of 1000 and under 5 s in pages of 5000. The coordinator caps a
+# page at 10000.
+DIRECTORY_PAGE_SIZE = int(os.environ.get("DIRECTORY_PAGE_SIZE", "1000"))
+if not 1 <= DIRECTORY_PAGE_SIZE <= 10000:
+    sys.exit(f"DIRECTORY_PAGE_SIZE={DIRECTORY_PAGE_SIZE} must be between 1 and 10000, "
+             "the most the coordinator will return in one page")
+# The exporter serves its last finished poll, so Prometheus can read it more
+# often than it polls. It has to once polls are minutes apart: a series not
+# sampled for five minutes goes stale and every directory panel shows gaps.
+DIRECTORY_SCRAPE = min(float(DIRECTORY_POLL), 60.0)
 
 # KV shape for bench: (n_kv,n_blocks,tokens_per_block,n_heads,head_dim):dtype:n_layers
 # Sized small — this host has ~4 GB spare RAM. Each bench client allocates
@@ -652,6 +705,52 @@ if TRACE and not os.path.isfile(os.path.join(_TRACE_DIR, "index.jsonl")):
     sys.exit(f"TRACE={TRACE}: no token trace at {_TRACE_DIR} "
              "(make trace-synth or make trace-exgentic builds one)")
 
+# ---------------- what this run is --------------------------------------------
+# The dashboard's top row describes the run it is showing: tier sizes, the L2
+# simulation, the workload. None of that is in any metric -- the servers export
+# L2 usage but not capacity, and the simulator's settings appear nowhere -- so
+# it is published here as the labels of one constant series, by a recording
+# rule. A rule rather than the directory exporter because the exporter is the
+# first thing to fall over on a fleet too big for it, and a description of the
+# run is most wanted exactly then.
+def _tier(capacity_gib, delays):
+    """One L2 tier in words: backing adapter, capacity, eviction, latency."""
+    if capacity_gib:
+        text = (f"{capacity_gib:g} GiB per server, {L2_EVICT_POLICY} at "
+                f"{L2_EVICT_WATERMARK:.0%} evicting {L2_EVICT_RATIO:.0%}")
+    else:
+        text = "unbounded, never evicts"
+    lag = ", ".join(f"{name} +{delays.get(f'{name}_delay_ms', 0):g} ms"
+                    for name in ("read", "write") if delays.get(f"{name}_delay_ms"))
+    return f"{text}; {lag}" if lag else text
+
+
+if TRACE:
+    _workload = (f"trace {TRACE}: route by {TRACE_ROUTE}, {TRACE_LANES} lanes, "
+                 f"speedup {TRACE_SPEEDUP:g}"
+                 + (f", stops at {TRACE_DURATION:g} s" if TRACE_DURATION else ""))
+else:
+    _workload = (f"synthetic windows: {SEQS} sequences of {NUM_TOKENS} tokens per server, "
+                 f"{STIM_OP} every {STIM_INTERVAL:g} s")
+RUN_INFO = {
+    "fleet": (f"{NUM_SERVERS} server{'s' if NUM_SERVERS != 1 else ''}, "
+              + ("1 coordinator" if NUM_COORD == 1 else
+                 f"{NUM_COORD} coordinators each tracking its own "
+                 f"{'server' if NUM_COORD == NUM_SERVERS else 'servers'}")
+              + f", {CHUNK_SIZE}-token chunks"),
+    "l1": f"{L1_GIB:g} GiB DRAM per server, spills to L2 at {float(EVICT_WATERMARK):.0%}",
+    "l2_local": "none" if L2_SHARED == "only" else _tier(L2_CAPACITY_GIB, L2_DELAYS),
+    "l2_shared": ("none" if L2_SHARED == "0" else
+                  f"{SHARE_GROUPS} director{'y' if SHARE_GROUPS == 1 else 'ies'} for "
+                  f"{NUM_SERVERS} servers; "
+                  + _tier(L2_SHARED_CAPACITY_GIB, L2_SHARED_DELAYS)),
+    "l2_sim": ((f"dedup on ({L2_LINK_MODE}s): L2 contents are fake" if L2_DEDUP
+                else "latency only: L2 contents are real") if L2_PLUGIN
+               else "off: stock adapter, real bytes"),
+    "workload": _workload,
+    "image": IMAGE,
+}
+
 servers, stimulators = [], []
 
 for i in range(1, NUM_SERVERS + 1):
@@ -692,10 +791,10 @@ for i in range(1, NUM_SERVERS + 1):
       --eviction-trigger-watermark {EVICT_WATERMARK}
       --supported-transfer-mode auto
       --shm-name fleet{i} --no-l1-use-lazy
-      --coordinator-url http://coordinator:{COORD_NET_PORT}
+      --coordinator-url http://{coord_name(coord_of(i))}:{COORD_NET_PORT}
       --coordinator-advertise-ip {name}
       --coordinator-event-reporting
-{l2_flags}
+{SERVER_EVENT_FLAGS}{l2_flags}
 """)
 
     # Everything a client of server i needs, whichever operation it runs.
@@ -759,24 +858,12 @@ for i in range(1, NUM_SERVERS + 1):
       --log /run/trace-{i}.jsonl
 """)
 
-compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
-# {NUM_SERVERS} MP servers (L1 DRAM + L2 fs) + {NUM_COORD} coordinator + {NUM_SERVERS} stimulators.
-# Containers run as uid:gid {RUN_UID}:{RUN_GID}; project "{PROJECT}" scopes the network.
-# Regenerate with: NUM_SERVERS=<n> SEQ=<seqs> python3 gen_compose.py
-
-name: {PROJECT}
-
-networks:
-  fleet:
-    driver: bridge
-
-services:
-  coordinator:
+coordinators = "\n".join(f"""  {coord_name(k)}:
     image: {IMAGE}
-    hostname: coordinator
+    hostname: {coord_name(k)}
 {NO_ENTRYPOINT}{RUN_AS}{COORD_ENV}    networks: [fleet]
-{COORD_VOLUMES}    ports:
-      - "127.0.0.1:{COORD_PORT}:{COORD_NET_PORT}"
+{_coord_volumes(k)}    ports:
+      - "127.0.0.1:{COORD_PORT + k - 1}:{COORD_NET_PORT}"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:{COORD_NET_PORT}/healthz',timeout=2)"]
@@ -788,7 +875,41 @@ services:
       --host 0.0.0.0 --port {COORD_NET_PORT}
       --chunk-size {CHUNK_SIZE}
       --instance-timeout 30
-{COORD_FLAGS}
+{COORD_FLAGS}""" for k in range(1, NUM_COORD + 1))
+
+
+def exporter_name(k):
+    return "directory-exporter" if k == 1 else f"directory-exporter-{k}"
+
+
+# One exporter per coordinator: it polls a single directory, and its ages and
+# churn counters are kept per placement, so each needs its own state too.
+exporters = "\n".join(f"""  {exporter_name(k)}:
+    image: {EXPORTER_IMAGE}
+    hostname: {exporter_name(k)}
+{RUN_AS}      COORDINATOR_URL: http://{coord_name(k)}:{COORD_NET_PORT}
+      POLL_INTERVAL: "{DIRECTORY_POLL}"
+      PAGE_SIZE: "{DIRECTORY_PAGE_SIZE}"
+    networks: [fleet]
+    volumes:
+      - ../monitoring/exporter:/exporter:ro
+      - ../data/{"exporter" if k == 1 else f"exporter-{k}"}:/state            # first-seen times, so ages survive a restart
+    command: ["python", "-u", "/exporter/directory_exporter.py"]
+""" for k in range(1, NUM_COORD + 1))
+
+compose = f"""# Generated by gen_compose.py — LMCache Fleet Demo (v0.5.8)
+# {NUM_SERVERS} MP servers (L1 DRAM + L2 fs) + {NUM_COORD} coordinator(s) + {NUM_SERVERS} stimulators.
+# Containers run as uid:gid {RUN_UID}:{RUN_GID}; project "{PROJECT}" scopes the network.
+# Regenerate with: NUM_SERVERS=<n> SEQ=<seqs> python3 gen_compose.py
+
+name: {PROJECT}
+
+networks:
+  fleet:
+    driver: bridge
+
+services:
+{coordinators}
 
   prometheus:
     image: {PROM_IMAGE}
@@ -796,23 +917,14 @@ services:
 {RUN_AS}    networks: [fleet]
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/rules.yml:/etc/prometheus/rules.yml:ro
       - ../data/prometheus:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time={PROM_RETENTION}
 
-  directory-exporter:
-    image: {EXPORTER_IMAGE}
-    hostname: directory-exporter
-{RUN_AS}      COORDINATOR_URL: http://coordinator:{COORD_NET_PORT}
-      POLL_INTERVAL: "{DIRECTORY_POLL}"
-    networks: [fleet]
-    volumes:
-      - ../monitoring/exporter:/exporter:ro
-      - ../data/exporter:/state            # first-seen times, so ages survive a restart
-    command: ["python", "-u", "/exporter/directory_exporter.py"]
-
+{exporters}
   grafana:
     image: {GRAFANA_IMAGE}
     hostname: grafana
@@ -854,25 +966,39 @@ scrape_targets = "\n".join(
     for i in range(1, NUM_SERVERS + 1)
 )
 
+# The `coordinator` label is what tells one pod's series from another's: the
+# coordinators and the exporters publish identical metric names.
+coordinator_targets = "\n".join(
+    f"""      - targets: ["{coord_name(k)}:{COORD_NET_PORT}"]
+        labels:
+          component: "coordinator"
+          coordinator: "{coord_name(k)}\""""
+    for k in range(1, NUM_COORD + 1))
+exporter_targets = "\n".join(
+    f"""      - targets: ["{exporter_name(k)}:9105"]
+        labels:
+          component: "directory-exporter"
+          coordinator: "{coord_name(k)}\""""
+    for k in range(1, NUM_COORD + 1))
+
 prometheus_yml = f"""# Generated by gen_compose.py — do not edit; regenerate with `make gen`.
 global:
   scrape_interval: {SCRAPE_INTERVAL}
   evaluation_interval: {SCRAPE_INTERVAL}
 
+rule_files:
+  - /etc/prometheus/rules.yml
+
 scrape_configs:
   - job_name: "lmcache-coordinator"
     metrics_path: /metrics
     static_configs:
-      - targets: ["coordinator:{COORD_NET_PORT}"]
-        labels:
-          component: "coordinator"
+{coordinator_targets}
 
   - job_name: "lmcache-directory"
-    scrape_interval: {DIRECTORY_POLL}s
+    scrape_interval: {DIRECTORY_SCRAPE:g}s
     static_configs:
-      - targets: ["directory-exporter:9105"]
-        labels:
-          component: "directory-exporter"
+{exporter_targets}
 
   - job_name: "lmcache-servers"
     metrics_path: /metrics
@@ -890,8 +1016,9 @@ for sub in (([f"l2-server-{i}" for i in range(1, NUM_SERVERS + 1)]
             + ([f"l2-shared-{g}" for g in range(1, SHARE_GROUPS + 1)]
                if L2_SHARED != "0" else [])
             + ([os.path.join("trace-runs", TRACE_RUN)] if TRACE else [])
-            + ["prometheus", "grafana", "exporter"]
-            + (["coordinator"] if COORD_CHECKPOINT else [])):
+            + ["prometheus", "grafana"]
+            + ["exporter" if k == 1 else f"exporter-{k}" for k in range(1, NUM_COORD + 1)]
+            + ([coord_name(k) for k in range(1, NUM_COORD + 1)] if COORD_CHECKPOINT else [])):
     d = os.path.join(here, "data", sub)
     os.makedirs(d, exist_ok=True)
     os.chmod(d, BIND_MODE)
@@ -900,18 +1027,37 @@ mon = os.path.join(here, "monitoring")
 os.makedirs(mon, exist_ok=True)
 with open(os.path.join(mon, "prometheus.yml"), "w") as f:
     f.write(prometheus_yml)
+# json.dumps gives a double-quoted string that is valid YAML whatever the value
+# holds. Rewritten in place, so the running Prometheus sees it through its bind
+# mount; it rereads rules on SIGHUP, which the make targets send.
+with open(os.path.join(mon, "rules.yml"), "w") as f:
+    f.write("# Generated by gen_compose.py -- do not edit; regenerate with `make gen`.\n"
+            "groups:\n  - name: lmcache-fleet-run\n    rules:\n"
+            "      - record: lmcache_fleet_run_info\n        expr: vector(1)\n"
+            "        labels:\n"
+            + "".join(f"          {k}: {json.dumps(v)}\n" for k, v in RUN_INFO.items()))
 
 docker_dir = os.path.join(here, "docker")
 os.makedirs(docker_dir, exist_ok=True)
 out = os.path.join(docker_dir, "docker-compose.yml")
 with open(out, "w") as f:
     f.write(compose)
-print(f"wrote {out} ({NUM_SERVERS} servers, coordinator, stimulators, "
+print(f"wrote {out} ({NUM_SERVERS} servers, "
+      f"{'coordinator' if NUM_COORD == 1 else f'{NUM_COORD} coordinators'}, stimulators, "
       f"prometheus + grafana; SEQ={SEQS})")
 print("  compose no longer sits at the repo root: use make, or "
       "export COMPOSE_FILE=docker/docker-compose.yml")
 print(f"wrote {os.path.join(mon, 'prometheus.yml')} "
-      f"({NUM_SERVERS + 2} scrape targets)")
+      f"({NUM_SERVERS + 2 * NUM_COORD} scrape targets)")
+if NUM_COORD > 1:
+    _pods = {}
+    for _i in range(1, NUM_SERVERS + 1):
+        _pods.setdefault(coord_of(_i), []).append(_i)
+    print(f"coordinators: {NUM_COORD}, on host ports {COORD_PORT}-{COORD_PORT + NUM_COORD - 1}: "
+          + "; ".join(f"{coord_name(k)} <- servers {','.join(map(str, m))}"
+                      for k, m in sorted(_pods.items())))
+    print("  each tracks only its own servers: `make report` and `make check` read "
+          "the first one")
 
 # Key-space summary: what each stimulator drew, and how much the fleet covers.
 covered = set()

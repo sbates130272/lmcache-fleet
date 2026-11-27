@@ -41,17 +41,24 @@ image: ## Build the CPU-only lmcache image (no-op if it already exists)
 		echo "building $(LMCACHE_IMAGE) from docker/Dockerfile..."; \
 		docker build -f docker/Dockerfile -t $(LMCACHE_IMAGE) . ; }
 
+# gen rewrites Prometheus' config and its rule file in place, and the rule file
+# is where the dashboard's description of the run comes from. A Prometheus that
+# is already running rereads both on SIGHUP; one that is not ignores this.
+RELOAD_PROM = @$(COMPOSE) kill -s SIGHUP prometheus >/dev/null 2>&1 || true
+
 gen: ## Regenerate docker-compose.yml for NUM servers
 	NUM_SERVERS=$(NUM) SEQ=$(SEQ) python3 scripts/gen_compose.py
 
 up: image gen ## Regenerate, then start the fleet plus prometheus and grafana
 	$(COMPOSE) up -d
+	$(RELOAD_PROM)
 	@echo "waiting for servers to be healthy..."
 	@$(COMPOSE) ps --format '{{.Name}} {{.Status}}'
 	@$(MAKE) --no-print-directory dash
 
 stim: image gen ## Run the one-shot stimulators to store KV chunks
 	$(COMPOSE) --profile stim up --detach $(shell seq 1 $(NUM) | sed 's/^/stim-/')
+	$(RELOAD_PROM)
 
 # The read side, and separate on purpose: the stimulators only store, so what
 # gets fetched back, how fast and in what order is this target's alone. Run it
@@ -59,6 +66,7 @@ stim: image gen ## Run the one-shot stimulators to store KV chunks
 # changes only the stim and restore services, so the servers are left running.
 restore: image gen ## Run the one-shot restore stimulators to fetch KV chunks back
 	$(COMPOSE) --profile restore up --detach $(shell seq 1 $(NUM) | sed 's/^/restore-/')
+	$(RELOAD_PROM)
 
 # Replays a token trace instead of the synthetic windows: every trace-N computes
 # the same schedule and keeps the requests routed to its own server. Pass the
@@ -66,6 +74,7 @@ restore: image gen ## Run the one-shot restore stimulators to fetch KV chunks ba
 trace: image gen ## Replay the token trace TRACE (a directory under data/traces)
 	@test -n "$(TRACE)" || { echo "set TRACE=<dir under data/traces>, e.g. TRACE=synth"; exit 1; }
 	$(COMPOSE) --profile trace up --detach $(shell seq 1 $(NUM) | sed 's/^/trace-/')
+	$(RELOAD_PROM)
 
 # `up` and `stim` stay separate so the stimulators can be re-run against a warm
 # fleet, or the fleet inspected before anything is stored. For a plain run,
@@ -252,7 +261,7 @@ down: ## Stop and remove the fleet containers
 
 clean: down ## Stop the fleet and delete cached L2 blobs plus metric history
 	@echo "removing bind-mount contents under ./data/"
-	rm -rf ./data/l2-server-* ./data/l2-shared-* ./data/prometheus ./data/grafana ./data/exporter ./data/coordinator
+	rm -rf ./data/l2-server-* ./data/l2-shared-* ./data/prometheus ./data/grafana ./data/exporter* ./data/coordinator*
 
 ##@ Help
 

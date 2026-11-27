@@ -171,6 +171,111 @@ def heatmap(title, expr, x, y, w=12, h=11, desc=""):
     }
 
 
+# Status roles, fixed and reserved: never a series colour. Each tile also says
+# its state in words or a number, so the fill never carries the meaning alone.
+GOOD, WARNING, CRITICAL = "#0aac23", "#fbb315", "#dc3c3d"
+
+
+def steps(*pairs):
+    """Threshold steps from (colour, from-value) pairs; the first starts at -inf."""
+    return [{"color": c, "value": v} for c, v in pairs]
+
+
+def health(title, expr, unit, x, y, thresholds, mappings=None, w=3, h=4, desc=""):
+    """One current value on a status fill: a health check read at a glance.
+
+    Instant, so a tile is what is true now rather than the last sample of a
+    range, and a series that has stopped being reported reads as no data
+    instead of holding its last value.
+    """
+    return {
+        "id": nid(), "type": "stat", "title": title, "description": desc,
+        "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "fieldConfig": {
+            "defaults": {"unit": unit, "noValue": "no data",
+                         "color": {"mode": "thresholds"},
+                         "thresholds": {"mode": "absolute", "steps": thresholds},
+                         "mappings": [{"type": "value", "options": {
+                             str(value): {"text": text, "index": i}
+                             for i, (value, text) in enumerate((mappings or {}).items())}}]
+                         if mappings else []},
+            "overrides": []},
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                    "orientation": "auto", "textMode": "value", "colorMode": "background",
+                    "graphMode": "none", "justifyMode": "center"},
+        "targets": [{"refId": "A", "datasource": DS, "expr": expr, "instant": True}],
+    }
+
+
+def counts(title, parts, x, y, w=3, h=4, desc=""):
+    """Two or more named counts in one tile, each on its own status fill.
+
+    For a pair that only means something together -- how many are up beside how
+    many are down -- where a tile each would spend the row's width on one fact.
+    `parts` is (expr, name, threshold steps); the name is shown with the value.
+    """
+    tile = health(title, parts[0][0], "short", x, y, parts[0][2], w=w, h=h, desc=desc)
+    tile["targets"] = [{"refId": chr(65 + i), "datasource": DS, "expr": expr,
+                        "instant": True, "legendFormat": name}
+                       for i, (expr, name, _) in enumerate(parts)]
+    tile["fieldConfig"]["overrides"] = [
+        {"matcher": {"id": "byName", "options": name},
+         "properties": [{"id": "thresholds", "value": {"mode": "absolute", "steps": thresholds}}]}
+        for _, name, thresholds in parts]
+    tile["options"].update(textMode="value_and_name", orientation="vertical")
+    return tile
+
+
+# gen_compose.py publishes the run's settings as the labels of one constant
+# series (see RUN_INFO there). Named here so a label added there without a row
+# here simply does not show, rather than appearing under its raw name.
+RUN_ROWS = [("fleet", "Fleet"), ("l1", "L1"), ("l2_local", "L2, Local to a Server"),
+            ("l2_shared", "L2, Shared between Servers"), ("l2_sim", "L2 Simulation"),
+            ("workload", "Workload"), ("image", "Image")]
+
+
+def run_table(x, y, w=24, h=9):
+    """The run's settings as two columns: what, and how it is set.
+
+    One instant sample in table form is a single row whose columns are the
+    labels; transposing it gives a row per setting, which is the readable way
+    round for seven sentences. Transpose spends the first column on naming the
+    new ones, so __name__ is kept and put first to be the one it spends.
+    """
+    return {
+        "id": nid(), "type": "table", "title": "This Run",
+        "description": "What the fleet on this dashboard was started with, as "
+                       "gen_compose.py generated it: tier sizes and eviction, what "
+                       "the L2 simulator is doing, and the workload. Read from the "
+                       "labels of lmcache_fleet_run_info, a constant Prometheus "
+                       "records from a generated rule, so it is here whether or not "
+                       "the coordinator and the directory exporter are keeping up.",
+        "datasource": DS, "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "fieldConfig": {
+            "defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"},
+                                    "inspect": False},
+                         "color": {"mode": "thresholds"},
+                         "thresholds": {"mode": "absolute",
+                                        "steps": [{"color": "text", "value": None}]}},
+            "overrides": [{"matcher": {"id": "byName", "options": "Setting"},
+                           "properties": [{"id": "custom.width", "value": 240}]}]},
+        "options": {"showHeader": False, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "countRows": False,
+                               "fields": ""}},
+        "transformations": [
+            {"id": "organize", "options": {
+                "excludeByName": {"Time": True, "Value": True},
+                "renameByName": dict(RUN_ROWS),
+                "indexByName": {"__name__": 0,
+                                **{name: i for i, (name, _) in enumerate(RUN_ROWS, 1)}}}},
+            {"id": "transpose", "options": {"firstFieldName": "Setting",
+                                            "restFieldsName": "Value"}},
+        ],
+        "targets": [{"refId": "A", "datasource": DS, "expr": "lmcache_fleet_run_info",
+                     "format": "table", "instant": True}],
+    }
+
+
 # Grafana unit ids: 'bytes' is bytes(IEC) and renders B/KiB/MiB/GiB. The
 # lowercase-b suffixes come from the 'bits'/'decbits' units, which this
 # dashboard never uses.
@@ -208,27 +313,91 @@ def ts(title, targets, unit, x, y, w=12, h=8, overrides=(), stacked=False,
     }
 
 panels = [
-    stat("Keys Tracked", "lmcache_coordinator_key_directory_keys_tracked", "short", 0, 0,
-         desc="Unique keys the coordinator's directory holds at least one placement for."),
-    stat("Servers Registered", "lmcache_coordinator_registry_servers_registered", "short", 6, 0,
+    # Declared y only orders the bands (see relayout), so the top section sits
+    # at negative values rather than renumbering everything under it.
+    row("This Run", -40),
+    run_table(0, -30),
+    health("Servers Up", 'count(up{job="lmcache-servers"} == 1) or vector(0)', "short", 0, -20,
+           steps((CRITICAL, None), (GOOD, 1)),
+           desc="MP servers Prometheus scraped successfully on its last pass. "
+                "Compare with the fleet size in the table above."),
+    health("Servers Down", 'count(up{job="lmcache-servers"} == 0) or vector(0)', "short", 3, -20,
+           steps((GOOD, None), (CRITICAL, 1)), mappings={0: "None"},
+           desc="MP servers whose last scrape failed: stopped, crashed, or too "
+                "busy to answer within the scrape timeout."),
+    counts("Coordinators",
+           [('count(up{job="lmcache-coordinator"} == 1) or vector(0)', "Up",
+             steps((CRITICAL, None), (GOOD, 1))),
+            ('count(up{job="lmcache-coordinator"} == 0) or vector(0)', "Down",
+             steps((GOOD, None), (CRITICAL, 1)))],
+           6, -20,
+           desc="How many coordinators Prometheus could scrape, and how many it "
+                "could not. Each tracks only the servers dealt to it, so one "
+                "down means that many servers' blocks are untracked, not that "
+                "the fleet is. A coordinator that is up can still be too slow to "
+                "be useful: see the three tiles to the right, which show the "
+                "worst of them."),
+    health("Coordinator Busy",
+           "max(rate(lmcache_coordinator_event_loop_blocked_seconds_total[2m]))",
+           "percentunit", 9, -20,
+           steps((GOOD, None), (WARNING, 0.2), (CRITICAL, 0.5)),
+           desc="Share of the last two minutes the busiest coordinator's event "
+                "loop was blocked. A coordinator is one process, and it decodes and applies cache "
+                "events on that loop, so this is how close it is to its limit: "
+                "while blocked it answers no heartbeat, event or directory "
+                "request. Past half, servers time out and drop events."),
+    health("Event Delay",
+           "max(lmcache_coordinator_ingest_server_event_delivery_delay_seconds)", "s", 12, -20,
+           steps((GOOD, None), (WARNING, 3), (CRITICAL, 6)),
+           desc="Longest time, across servers, between a cache event being "
+                "recorded and the coordinator applying it. Servers flush about "
+                "once a second and give a post two seconds, so a delay well past "
+                "that means posts are queueing behind a busy coordinator."),
+    health("Events Dropped/s",
+           "sum(rate(lmcache_coordinator_ingest_events_dropped_by_servers_total[2m]))", "short",
+           15, -20, steps((GOOD, None), (CRITICAL, 0.001)), mappings={0: "None"},
+           desc="Cache events servers gave up delivering, as they report it. A "
+                "failed post is not retried, so each one is a store, access or "
+                "eviction the key directory never hears about."),
+    health("Servers with Gaps",
+           "sum(lmcache_coordinator_ingest_server_view_incomplete) or vector(0)", "short", 18, -20,
+           steps((GOOD, None), (CRITICAL, 1)), mappings={0: "None"},
+           desc="Servers whose event stream reached the coordinator with batches "
+                "missing. The directory's picture of such a server is incomplete "
+                "until it restarts, so every panel built on the directory "
+                "under-reports it."),
+    health("Directory Poll Age",
+           "time() - min(lmcache_directory_last_poll_timestamp_seconds)", "s", 21, -20,
+           steps((GOOD, None), (WARNING, 600), (CRITICAL, 1800)),
+           desc="Time since the stalest directory exporter last read its whole key "
+                "directory. The inventory panels further down are as stale as "
+                "this. Amber from ten minutes, so a DIRECTORY_POLL of five is "
+                "still green between polls. It pages the directory a thousand keys at a time, so on a "
+                "large one a poll can outlast its timeout and never finish."),
+    row("Fleet State (Coordinator and Servers)", -10),
+    stat("Keys Tracked", "sum(lmcache_coordinator_key_directory_keys_tracked)", "short", 0, 0,
+         desc="Unique keys the coordinator's directory holds at least one placement for. "
+              "Summed over coordinators when there are several, and each tracks only "
+              "its own servers, so a key held under two of them counts twice."),
+    stat("Servers Registered", "sum(lmcache_coordinator_registry_servers_registered)", "short", 6, 0,
          desc="MP servers currently heartbeating to the coordinator."),
-    stat("L1 Placements", 'lmcache_coordinator_key_directory_placements{tier="l1"}', "short", 12, 0,
+    stat("L1 Placements", 'sum(lmcache_coordinator_key_directory_placements{tier="l1"})', "short", 12, 0,
          desc="Key copies resident in some server's L1 DRAM tier."),
-    stat("L2 Placements", 'lmcache_coordinator_key_directory_placements{tier="l2"}', "short", 18, 0,
+    stat("L2 Placements", 'sum(lmcache_coordinator_key_directory_placements{tier="l2"})', "short", 18, 0,
          desc="Key copies written through to an L2 backend. Counts only what was "
               "written while this coordinator has been up: nothing scans L2 at "
               "startup, so .data files left by an earlier run read as 0 here."),
 
     ts("Fleet Keys by Tier",
-       [('lmcache_coordinator_key_directory_placements{tier="l1"}', T1),
-        ('lmcache_coordinator_key_directory_placements{tier="l2"}', T2)],
+       [('sum(lmcache_coordinator_key_directory_placements{tier="l1"})', T1),
+        ('sum(lmcache_coordinator_key_directory_placements{tier="l2"})', T2)],
        "short", 0, 4, stacked=True, fill=60, overrides=TIER_OVERRIDES,
        desc="Coordinator's own view. A placement is one place a key is stored: "
             "L1 on one server, or one L2 backend. Stacked, so total height is "
             "every copy the fleet holds."),
     ts("Fleet Bytes by Tier",
-       [('lmcache_coordinator_usage_bytes_stored{tier="l1"}', T1),
-        ('lmcache_coordinator_usage_bytes_stored{tier="l2"}', T2)],
+       [('sum(lmcache_coordinator_usage_bytes_stored{tier="l1"})', T1),
+        ('sum(lmcache_coordinator_usage_bytes_stored{tier="l2"})', T2)],
        "bytes", 12, 4, stacked=True, fill=60, overrides=TIER_OVERRIDES,
        desc="Bytes the fleet reports holding, as aggregated by the coordinator."),
 
@@ -358,9 +527,9 @@ panels = [
        desc="Age of the longest-lived block in each server's L2. A steadily "
             "climbing line means nothing is being evicted from L2."),
     ts("Keys by Number of Servers Holding Them",
-       [('lmcache_directory_keys_by_replicas{replicas="1"}', "1 Server"),
-        ('lmcache_directory_keys_by_replicas{replicas="2"}', "2 Servers"),
-        ('lmcache_directory_keys_by_replicas{replicas="3+"}', "3+ Servers")],
+       [('sum(lmcache_directory_keys_by_replicas{replicas="1"})', "1 Server"),
+        ('sum(lmcache_directory_keys_by_replicas{replicas="2"})', "2 Servers"),
+        ('sum(lmcache_directory_keys_by_replicas{replicas="3+"})', "3+ Servers")],
        "short", 12, 61, stacked=True, fill=60, overrides=REPLICA_OVERRIDES,
        desc="Replication across the registered fleet. Keys held by one server "
             "are unique to it; keys held by several come from overlapping "

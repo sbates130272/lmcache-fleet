@@ -378,6 +378,55 @@ run's state rather than leaving a stale checkpoint for the next fleet to
 resume from. `COORD_CHECKPOINT=0` turns it off and the coordinator keeps
 nothing.
 
+## When One Coordinator Is Not Enough
+
+A coordinator is one process, and it decodes and applies every cache event on
+one event loop. A server posts its events about once a second, gives the post
+two seconds, and does not retry: a post that times out is dropped, and a late
+one that still arrives is rejected as a duplicate of the newer one already
+applied. So an overloaded coordinator does not slow down, it stops being right,
+and spends its core decoding posts it will throw away.
+
+Measured on 100 servers replaying 2M agent sessions (92 requests a second,
+about 850 events a request) against a single coordinator: 81 batches a second
+applied, 300 decoded and rejected, 579 never received, 47,000 events a second
+dropped by servers, every server's view incomplete. Cache hits were unaffected
+— the coordinator is not on the request path — but every panel built on the
+key directory under-reported.
+
+`NUM_COORD` deals the servers across that many coordinators:
+
+```bash
+L2_DEDUP=1 NUM_COORD=2 make up NUM=20     # two coordinators, ten servers each
+```
+
+LMCache v0.5.8 has no coordinator clustering, so these are pods, not a cluster:
+each coordinator tracks its own servers and knows nothing of the rest, with its
+own directory exporter and its own host port, counting up from `COORD_PORT`.
+Prometheus labels every series with its `coordinator`, and the dashboard's
+fleet totals sum across them. The same trace at the same load per server, ten
+servers to a coordinator: 65 batches a second applied by each, none rejected,
+missing or dropped, event loop blocked 4% of the time.
+
+Three things to know:
+
+- **Totals are sums of pods.** A key held under two coordinators is counted
+  twice in "Keys Tracked", and "Most Reused Blocks" lists each pod's top ten.
+- **`make report` and `make check` read the first coordinator only.**
+- **A shared L2 is tracked per pod.** Each coordinator records the shared
+  placements its own servers report. `NUM_COORD` equal to `SHARE_GROUPS` gives
+  every shared directory exactly one coordinator.
+
+Two more knobs for a large fleet. `KV_EVENT_LOG_SIZE` (default 0 here) is the
+servers' KV-event channel: a log and a token cache kept for engines that
+subscribe to it, which nothing in this fleet does, and which otherwise grows by
+about a quarter of a GiB an hour per server until its bounds are reached.
+`DIRECTORY_PAGE_SIZE` (default 1000, at most 10000) is how many keys the
+exporter reads at a time; on a directory of tens of thousands of keys, larger
+pages cost the coordinator fewer passes over it. `DIRECTORY_POLL` can then be
+minutes: Prometheus reads the exporter's last finished poll at most a minute
+apart regardless, so the panels do not go stale between polls.
+
 ## Monitoring the Fleet
 
 `make up` also starts Prometheus and Grafana on the fleet network. Grafana is the
@@ -394,7 +443,21 @@ Prometheus scrapes `/metrics` on the coordinator (`:9300`) and on every MP serve
 (`:8080` — *not* the server's `--prometheus-port 9090`, which does not bind when
 metrics are already on the HTTP app). `make targets` lists them with their health.
 
-The **LMCache Fleet** dashboard pairs the two views, because they are not
+**What the run is, and whether it is healthy.** The dashboard opens on a
+table describing the fleet it is showing — tier sizes and eviction, what the
+L2 simulator is doing, the workload — and a row of health tiles under it:
+servers up and down, the coordinator, how busy it is, how late and how lossy
+the cache-event stream is, and how stale the directory inventory is. None of
+the settings are in any LMCache metric, so gen_compose writes them as the
+labels of one constant series, `lmcache_fleet_run_info`, in a generated
+Prometheus rule (`monitoring/rules.yml`); the make targets send Prometheus a
+SIGHUP so a regenerated description is picked up. A rule rather than the
+exporter, because the description is most wanted when the exporter and the
+coordinator are the things in trouble. The coordinator tiles are the ones to
+watch on a large fleet: it is a single process, and once it falls behind the
+servers time out, drop events, and the directory panels quietly under-report.
+
+The rest of the dashboard pairs two views, because they are not
 interchangeable:
 
 - *Coordinator view* — keys tracked, placements by tier, fleet bytes by tier, and
