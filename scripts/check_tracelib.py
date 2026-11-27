@@ -88,6 +88,39 @@ with tempfile.TemporaryDirectory() as tmp:
         by_group.setdefault(group, set()).add(tracelib.route("group", sid, group, 0, 5))
     assert all(len(v) == 1 for v in by_group.values()), by_group
 
+    # The index and the schedule are numpy columns, and still read as the
+    # lists they replaced: plain Python values, so they format, hash and
+    # serialise as before.
+    sid, group, requests = trace.sessions[-1]
+    assert (sid, group, len(requests), len(trace.sessions)) == ("s2", "g0", 6, 3)
+    assert requests[-1] == requests[5] == list(requests)[5]
+    assert all(type(v) in (int, float) for v in requests[0].values()), requests[0]
+    assert [type(v) for v in events[0]] == [float, int, int], events[0]
+    assert events[-1] == list(events)[-1] and events != events[:1]
+    assert not tracelib.schedule(trace, 2, max_sessions=0)
+
+with tempfile.TemporaryDirectory() as tmp:
+    # Sessions whose requests interleave in the file are gathered, in order.
+    rng = np.random.default_rng(1)
+    writer = tracelib.TraceWriter(tmp, {"kind": "test"})
+    expected = {}
+    for turn in range(4):
+        for sid in ("a", "b", "c"):
+            previous = expected.get((sid, turn - 1), np.zeros(0, "<u4"))
+            expected[sid, turn] = np.concatenate(
+                (previous, rng.integers(1000, 9000, size=300, dtype="<u4")))
+            writer.add(sid, "g", turn * 10.0 + ord(sid), expected[sid, turn])
+    writer.close()
+    trace = tracelib.Trace(tmp)
+    assert [(sid, len(requests)) for sid, _g, requests in trace.sessions] == \
+        [("a", 4), ("b", 4), ("c", 4)]
+    for sid, _group, requests in trace.sessions:
+        previous = None
+        for turn, request in enumerate(requests):
+            assert request["t"] == turn * 10.0 + ord(sid)
+            previous = trace.tokens(request, previous)
+            assert np.array_equal(previous, expected[sid, turn]), (sid, turn)
+
     assert [tracelib.gap_bucket(x) for x in (0.5, 1, 2, 3600, 3601)] == [0, 0, 1, 6, 7]
     assert len(tracelib.gap_labels()) == len(tracelib.GAP_BOUNDS) + 1
 

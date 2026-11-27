@@ -104,6 +104,7 @@ ENV_DOCS = {
 
     "RUN_UID": ("Runtime", "uid every container runs as"),
     "RUN_GID": ("Runtime", "gid every container runs as"),
+    "CGROUP_PARENT": ("Runtime", "systemd slice for every container, e.g. system.slice; unset = docker's default"),
     "COMPOSE_PROJECT_NAME": ("Runtime", "scopes the network and container names"),
     "LMCACHE_VERSION": ("Runtime", "version named in the NUM_COORD error only"),
 
@@ -258,7 +259,12 @@ SHM_SIZE = os.environ.get("SHM_SIZE", "512m")
 # mounts are owned by us, not by whatever uid the image happens to default to.
 RUN_UID = os.environ.get("RUN_UID", str(os.getuid()))
 RUN_GID = os.environ.get("RUN_GID", str(os.getgid()))
-RUN_AS = f'    user: "{RUN_UID}:{RUN_GID}"\n    environment:\n      HOME: /tmp\n'
+# Some nodes reject a container that names no systemd slice ("cgroup-parent for
+# systemd cgroup should be a valid slice"). Unset, nothing is written and docker
+# picks its own parent, as before.
+CGROUP_PARENT = os.environ.get("CGROUP_PARENT", "")
+RUN_AS = (f"    cgroup_parent: {CGROUP_PARENT}\n" if CGROUP_PARENT else "") \
+    + f'    user: "{RUN_UID}:{RUN_GID}"\n    environment:\n      HOME: /tmp\n'
 
 # docker/Dockerfile deliberately sets no ENTRYPOINT, so the command compose
 # passes is what runs. This clears any ENTRYPOINT anyway, which costs nothing

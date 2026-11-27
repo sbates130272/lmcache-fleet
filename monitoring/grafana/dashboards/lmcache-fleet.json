@@ -910,7 +910,7 @@
             "type": "prometheus",
             "uid": "lmcache-prom"
           },
-          "expr": "lmcache_mp_l1_write_chunks_total{server=~\"$server\"} - lmcache_mp_l1_evicted_chunks_total{server=~\"$server\"}",
+          "expr": "sum by (server) (lmcache_mp_l1_write_chunks_total{server=~\"$server\"}) - (sum by (server) (lmcache_mp_l1_evicted_chunks_total{server=~\"$server\"}) or sum by (server) (lmcache_mp_l1_write_chunks_total{server=~\"$server\"}) * 0)",
           "legendFormat": "{{server}}"
         }
       ]
