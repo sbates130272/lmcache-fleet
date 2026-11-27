@@ -8,6 +8,9 @@ SEQ ?= 8
 SHOT ?= grafana.png
 SETTLE ?= 8
 WINDOW ?= 15m
+# Some nodes reject a container that names no systemd slice. gen_compose.py
+# reads CGROUP_PARENT for the fleet; this covers the one-off `docker run`s.
+CGROUP_RUN := $(if $(CGROUP_PARENT),--cgroup-parent=$(CGROUP_PARENT))
 
 define TARGETS_PY
 import json, sys
@@ -71,7 +74,7 @@ run: up stim ## Start the fleet and immediately run the stimulators
 	@echo "fleet running; 'make report NUM=$(NUM)' or 'make dash' to watch"
 
 test-plugins: image ## Run the plugin test suites inside the lmcache image
-	@docker run --rm \
+	@docker run --rm $(CGROUP_RUN) \
 		-v "$(CURDIR)/plugins:/plugins:ro" \
 		-e HOME=/tmp -e PYTHONPATH=/plugins/lmcache-l2-sim \
 		-e LMCACHE_DISABLE_BANNER=1 \
@@ -86,7 +89,7 @@ test-plugins: image ## Run the plugin test suites inside the lmcache image
 # under data/traces/cache, so they survive between runs and `make clean`.
 # HF_TOKEN is passed by name only: docker takes the value from the environment,
 # so it is never expanded into a command line that make echoes or `ps` shows.
-TRACE_PY = docker run --rm --entrypoint "" --user "$(shell id -u):$(shell id -g)" \
+TRACE_PY = docker run --rm $(CGROUP_RUN) --entrypoint "" --user "$(shell id -u):$(shell id -g)" \
 	-e HOME=/tmp -e HF_HOME=/traces/cache/hf -e PYTHONPATH=/traces/cache/site \
 	-e HF_HUB_DISABLE_PROGRESS_BARS=1 -e HF_TOKEN \
 	-v "$(CURDIR)/data/traces:/traces" -v "$(CURDIR)/data/trace-runs:/runs" \
@@ -100,7 +103,7 @@ MAX_INPUT_TOKENS ?= 130000
 
 trace-deps: image ## Install pyarrow under data/traces/cache (only `trace-exgentic` needs it)
 	@mkdir -p data/traces/cache/site data/traces/cache/hf data/trace-runs
-	@test -d data/traces/cache/site/pyarrow || docker run --rm --entrypoint "" \
+	@test -d data/traces/cache/site/pyarrow || docker run --rm $(CGROUP_RUN) --entrypoint "" \
 		--user "$(shell id -u):$(shell id -g)" -e HOME=/tmp \
 		-v "$(CURDIR)/data/traces:/traces" $(LMCACHE_IMAGE) \
 		/opt/venv/bin/pip install -q --target /traces/cache/site pyarrow
@@ -149,7 +152,7 @@ test-released: image ## Run the plugin tests against the PyPI release, not the w
 		name=$$(basename "$$d"); \
 		test -d "$$d/tests" || { echo "==> $$name: no tests/, skipping"; continue; }; \
 		echo "==> $$name$(if $(VERSION),==$(VERSION), (latest)) from PyPI"; \
-		docker run --rm \
+		docker run --rm $(CGROUP_RUN) \
 			-v "$(CURDIR)/$$d/tests:/tests:ro" \
 			-e HOME=/tmp -e LMCACHE_DISABLE_BANNER=1 \
 			-e PKG_NAME="$$name" -e PKG_SPEC="$$name$(if $(VERSION),==$(VERSION),)" \

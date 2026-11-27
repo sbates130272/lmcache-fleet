@@ -18,7 +18,9 @@ trace of 100k-token contexts small.
 Index fields: sid (session id), g (group: what sessions might share, e.g. a
 benchmark or a repo), t (seconds since the session's first request), n (total
 tokens), keep, off and new (see above), out (output tokens, informational).
+n and out are for whoever reads the file; a Trace does not load them.
 """
+import array
 import hashlib
 import heapq
 import json
@@ -89,24 +91,105 @@ class TraceWriter:
         return self.meta
 
 
+class _Requests:
+    """One session's requests, each built from the index columns when asked for."""
+
+    __slots__ = ("_trace", "_lo", "_hi")
+
+    def __init__(self, trace, lo, hi):
+        self._trace, self._lo, self._hi = trace, lo, hi
+
+    def __len__(self):
+        return self._hi - self._lo
+
+    def __getitem__(self, i):
+        if i < 0:
+            i += self._hi - self._lo
+        if not 0 <= i < self._hi - self._lo:
+            raise IndexError(i)
+        return self._trace._request(self._lo + i)
+
+    def __iter__(self):
+        return (self._trace._request(r) for r in range(self._lo, self._hi))
+
+
+class _Sessions:
+    """`[(sid, group, requests)]` in file order, without a tuple held per session."""
+
+    __slots__ = ("_trace",)
+
+    def __init__(self, trace):
+        self._trace = trace
+
+    def __len__(self):
+        return len(self._trace._sid)
+
+    def __getitem__(self, s):
+        trace = self._trace
+        if s < 0:
+            s += len(trace._sid)
+        if not 0 <= s < len(trace._sid):
+            raise IndexError(s)
+        return (trace._sid[s], trace._group[s],
+                _Requests(trace, int(trace._starts[s]), int(trace._starts[s + 1])))
+
+    def __iter__(self):
+        return (self[s] for s in range(len(self)))
+
+
 class Trace:
-    """A token trace opened for reading."""
+    """A token trace opened for reading.
+
+    The index is held as one numpy column per field rather than a dict per
+    request. Every client of a fleet loads the whole index, whatever its share
+    of the requests, so a dict each -- about 760 bytes -- made memory the limit
+    on servers times sessions long before CPU was. Columns are 24 bytes a
+    request. Only what a replay reads is kept: t, keep, off and new.
+    """
 
     def __init__(self, path):
         self.path = path
         with open(os.path.join(path, "meta.json")) as f:
             self.meta = json.load(f)
-        self.sessions = []            # [(sid, group, [request, ...])], in file order
-        by_sid = {}
+        # array.array rather than lists while reading: a list of boxed numbers
+        # would bring the per-request cost straight back for the length of the
+        # load, which is when every client of the fleet is doing it at once.
+        t, off = array.array("d"), array.array("q")
+        keep, new, session = array.array("q"), array.array("q"), array.array("q")
+        self._sid, self._group = [], []
+        by_sid, groups = {}, {}
         with open(os.path.join(path, "index.jsonl")) as f:
             for line in f:
                 r = json.loads(line)
-                if r["sid"] not in by_sid:
-                    by_sid[r["sid"]] = len(self.sessions)
-                    self.sessions.append((r["sid"], r["g"], []))
-                self.sessions[by_sid[r["sid"]]][2].append(r)
+                s = by_sid.get(r["sid"])
+                if s is None:
+                    s = by_sid[r["sid"]] = len(self._sid)
+                    self._sid.append(r["sid"])
+                    # One string per group, not one per session that names it.
+                    self._group.append(groups.setdefault(r["g"], r["g"]))
+                session.append(s)
+                t.append(r["t"])
+                keep.append(r["keep"])
+                off.append(r["off"])
+                new.append(r["new"])
+        session = np.frombuffer(session, dtype=np.int64) if session else np.zeros(0, np.int64)
+        columns = [np.array(t, dtype=np.float64), np.array(keep, dtype=np.int64),
+                   np.array(off, dtype=np.int64), np.array(new, dtype=np.int64)]
+        if len(session) and (np.diff(session) < 0).any():
+            # A session whose requests are not adjacent in the file: gather
+            # them, keeping their order, as appending to a per-session list did.
+            order = np.argsort(session, kind="stable")
+            columns = [c[order] for c in columns]
+        self._t, self._keep, self._off, self._new = columns
+        self._starts = np.concatenate(
+            ([0], np.cumsum(np.bincount(session, minlength=len(self._sid))))).astype(np.int64)
+        self.sessions = _Sessions(self)
         self._tokens = np.memmap(os.path.join(path, "tokens.u32"), dtype="<u4", mode="r") \
             if os.path.getsize(os.path.join(path, "tokens.u32")) else np.zeros(0, "<u4")
+
+    def _request(self, r):
+        return {"t": float(self._t[r]), "keep": int(self._keep[r]),
+                "off": int(self._off[r]), "new": int(self._new[r])}
 
     def tokens(self, request, previous):
         """A request's full token array, given the previous one in its session."""
@@ -116,9 +199,48 @@ class Trace:
         return np.concatenate((previous[:request["keep"]], new))
 
 
+class Schedule:
+    """`[(due_seconds, session_index, request_index)]` in replay order.
+
+    Three arrays instead of a list of tuples, for the reason Trace holds
+    columns: every client computes the whole schedule. It reads as the list it
+    replaced -- len, indexing, iteration and equality all give tuples.
+    """
+
+    __slots__ = ("due", "session", "request")
+    __hash__ = None
+
+    def __init__(self, due, session, request):
+        self.due, self.session, self.request = due, session, request
+
+    def __len__(self):
+        return len(self.due)
+
+    def __getitem__(self, n):
+        return float(self.due[n]), int(self.session[n]), int(self.request[n])
+
+    def __iter__(self):
+        # In blocks: tolist() on the whole schedule would build the list of
+        # boxed tuples this class exists to avoid.
+        for lo in range(0, len(self.due), 65536):
+            hi = lo + 65536
+            yield from zip(self.due[lo:hi].tolist(), self.session[lo:hi].tolist(),
+                           self.request[lo:hi].tolist(), strict=True)
+
+    def __eq__(self, other):
+        if isinstance(other, Schedule):
+            return (np.array_equal(self.due, other.due)
+                    and np.array_equal(self.session, other.session)
+                    and np.array_equal(self.request, other.request))
+        try:
+            return list(self) == list(other)
+        except TypeError:
+            return NotImplemented
+
+
 def schedule(trace, concurrency, idle_cap=60.0, speedup=1.0, stagger=0.5,
              duration=None, max_sessions=None):
-    """When every request is due: [(due_seconds, session_index, request_index)].
+    """When every request is due, as a Schedule of (due, session, request).
 
     `concurrency` lanes each play one session at a time, back to back, taking
     sessions in file order. Inside a session the recorded gaps between request
@@ -129,20 +251,37 @@ def schedule(trace, concurrency, idle_cap=60.0, speedup=1.0, stagger=0.5,
     """
     lanes = [(i * stagger / speedup, i) for i in range(concurrency)]
     heapq.heapify(lanes)
-    events = []
-    for s, (_sid, _group, requests) in enumerate(trace.sessions[:max_sessions]):
+    starts, t = trace._starts, trace._t
+    sessions = len(range(len(trace.sessions))[:max_sessions])
+    due = np.empty(int(starts[sessions]), dtype=np.float64)
+    played = 0
+    for s in range(sessions):
+        lo, hi = int(starts[s]), int(starts[s + 1])
         start, lane = heapq.heappop(lanes)
         if duration is not None and start > duration:
             break
-        due, last_t = start, requests[0]["t"]
-        for i, request in enumerate(requests):
-            due += min(max(request["t"] - last_t, 0.0), idle_cap) / speedup
-            last_t = request["t"]
-            if duration is None or due <= duration:
-                events.append((due, s, i))
-        heapq.heappush(lanes, (due + 1.0 / speedup, lane))
-    events.sort()
-    return events
+        # The session's start, then each capped gap, summed in order: cumsum
+        # adds left to right, so a due time is the same float the running
+        # `due += gap` of a plain loop would reach.
+        steps = due[lo:hi]
+        steps[0] = start
+        np.subtract(t[lo + 1:hi], t[lo:hi - 1], out=steps[1:])
+        np.clip(steps[1:], 0.0, idle_cap, out=steps[1:])
+        steps[1:] /= speedup
+        np.cumsum(steps, out=steps)
+        heapq.heappush(lanes, (float(steps[-1]) + 1.0 / speedup, lane))
+        played = s + 1
+    end = int(starts[played])
+    due = due[:end]
+    counts = np.diff(starts[:played + 1])
+    session = np.repeat(np.arange(played, dtype=np.int32), counts)
+    request = (np.arange(end, dtype=np.int64) - np.repeat(starts[:played], counts)).astype(np.int32)
+    if duration is not None:
+        keep = due <= duration
+        due, session, request = due[keep], session[keep], request[keep]
+    # Sorted as tuples sort: by due time, then session, then request.
+    order = np.lexsort((request, session, due))
+    return Schedule(due[order], session[order], request[order])
 
 
 def route(policy, sid, group, request_index, servers):
